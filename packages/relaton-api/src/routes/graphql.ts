@@ -4,6 +4,7 @@ import type { AppEnv, Env } from "../env";
 import {
   getDocument,
   pageSummaries,
+  scalarText,
   searchDocumentPages,
   type StorageV2Doc,
 } from "../lib/storage2";
@@ -156,10 +157,13 @@ const asArray = <T>(value: T | T[] | undefined | null): T[] =>
 const asStringArray = (value: unknown): string[] =>
   asArray(value as string | string[]).map(String);
 
-function listField(data: Record<string, unknown>, name: string): ModelListField[] {
-  const raw = data[name];
+function listEntries(raw: unknown): ModelListField[] {
   if (typeof raw === "string") return [{ content: raw }];
   return asArray(raw as ModelListField | ModelListField[]);
+}
+
+function listField(data: Record<string, unknown>, name: string): ModelListField[] {
+  return listEntries(data[name]);
 }
 
 function scalarContent(entry: unknown): string | null {
@@ -195,18 +199,22 @@ function decodeCursor(cursor: string): string | null {
 const bibliographicItemFields = {
   key: (doc: StorageV2Doc) => doc.key,
   flavor: (doc: StorageV2Doc) => doc.flavor,
-  docids: (doc: StorageV2Doc) =>
-    listField(doc.data, "docidentifier").map((d) => ({
-      content: scalarContent(d),
+  docids: (doc: StorageV2Doc) => {
+    // v1.5 names the field `docidentifier` with `content`; v1.2-era
+    // datasets name it `docid` with `id`.
+    const raw = (doc.data.docidentifier ?? doc.data.docid) as unknown;
+    return listEntries(raw).map((d) => ({
+      content: scalarContent((d as { content?: unknown }).content ?? (d as { id?: unknown }).id),
       type: d.type ?? null,
       primary: d.primary === true,
-    })),
+    }));
+  },
   titles: (doc: StorageV2Doc) =>
     listField(doc.data, "title").map((t) => ({
       content: scalarContent(t),
       language: asStringArray(t.language)[0] ?? null,
       script: asStringArray(t.script)[0] ?? null,
-      type: t.type ?? null,
+      type: t.type ?? "main",
     })),
   dates: (doc: StorageV2Doc) => asArray(doc.data.date),
   contributors: (doc: StorageV2Doc) =>
@@ -340,12 +348,15 @@ const resolvers = {
     },
   },
 
+  Organization: {
+    name: (org: { name?: unknown }) => scalarText(org.name),
+    abbreviation: (org: { abbreviation?: unknown }) => scalarText(org.abbreviation),
+    url: (org: { url?: unknown }) => scalarText(org.url),
+  },
+
   Contributor: {
     role: (contributor: { role: unknown }) =>
-      scalarContent(asArray(contributor.role as never[])[0] as unknown) ??
-      (typeof asArray(contributor.role as never[])[0] === "object"
-        ? (asArray(contributor.role as { type?: string }[])[0] as { type?: string } | undefined)?.type ?? null
-        : null),
+      scalarText(asArray(contributor.role as never[])[0]),
     person: (contributor: { person?: { name?: { completename?: unknown } } }) => {
       const person = contributor.person;
       if (!person) return null;

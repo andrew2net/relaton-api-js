@@ -58,15 +58,25 @@ function arrayify<T>(value: T | T[] | undefined): T[] {
 export function scalarText(entry: unknown): string | null {
   if (typeof entry === "string") return entry;
   if (typeof entry === "number" || typeof entry === "boolean") return String(entry);
+  if (Array.isArray(entry)) return entry.length ? scalarText(entry[0]) : null;
   if (entry && typeof entry === "object") {
     const content = (entry as { content?: unknown }).content;
     if (content !== undefined) return scalarText(content);
     const value = (entry as { value?: unknown }).value;
-    if (typeof value === "string") return value;
+    if (value !== undefined && value !== null) {
+      const text = scalarText(value);
+      if (text !== null) return text;
+    }
     // Role entries carry their value under `type` ({ type: "publisher" }).
     const type = (entry as { type?: unknown }).type;
     if (type !== undefined && type !== null) {
       const text = scalarText(type);
+      if (text !== null) return text;
+    }
+    // v1.2-era datasets name identifier content `id` ({ id: "IANA x" }).
+    const id = (entry as { id?: unknown }).id;
+    if (id !== undefined && id !== null) {
+      const text = scalarText(id);
       if (text !== null) return text;
     }
   }
@@ -85,19 +95,32 @@ export function projectTitles(data: Record<string, unknown>): { lang: string | n
   const raw = data.title;
   const entries: TitleEntry[] = typeof raw === "string" ? [{ content: raw }] : arrayify(raw as TitleEntry | TitleEntry[]);
   return entries
-    .map((t) => ({ lang: scalarText(arrayify(t.language)[0]), type: scalarText(t.type), text: titleText(t) }))
-    .filter((t): t is { lang: string | null; type: string | null; text: string } => t.text !== "");
+    .map((t) => ({
+      // The model defaults an absent title type to main — old datasets
+      // (v1.2-era) carry `format` instead of `type` and no type at all.
+      lang: scalarText(arrayify(t.language)[0]),
+      type: scalarText(t.type) ?? "main",
+      text: titleText(t),
+    }))
+    .filter((t): t is { lang: string | null; type: string; text: string } => t.text !== "");
 }
 
+// v1.5 names the field `docidentifier` with `content`; v1.2-era datasets
+// name it `docid` with `id` — both are the same projection.
 export function projectIdentifiers(data: Record<string, unknown>): { raw: string; type: string | null; isPrimary: number }[] {
-  return arrayify(data.docidentifier as DocidentifierEntry | DocidentifierEntry[])
-    .map((d) => ({ raw: scalarText(d.content), type: scalarText(d.type), isPrimary: d.primary === true ? 1 : 0 }))
+  const raw = (data.docidentifier ?? data.docid) as DocidentifierEntry | DocidentifierEntry[] | undefined;
+  return arrayify(raw)
+    .map((d) => ({ raw: scalarText((d as { content?: unknown }).content ?? (d as { id?: unknown }).id), type: scalarText(d.type), isPrimary: d.primary === true ? 1 : 0 }))
     .filter((d): d is { raw: string; type: string | null; isPrimary: number } => d.raw !== null);
 }
 
 export function projectDates(data: Record<string, unknown>): { type: string | null; onDate: string | null }[] {
   return arrayify(data.date as DateEntry | DateEntry[])
-    .map((d) => ({ type: scalarText(d.type), onDate: scalarText(d.on) ?? scalarText(d.from) ?? scalarText(d.to) }));
+    .map((d) => ({
+      type: scalarText(d.type),
+      onDate: scalarText(d.on) ?? scalarText(d.from) ?? scalarText(d.to)
+        ?? scalarText((d as { value?: unknown }).value),
+    }));
 }
 
 export function projectContributors(data: Record<string, unknown>): { role: string | null; name: string | null; orgAbbrev: string | null }[] {
