@@ -1,5 +1,13 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
+import {
+  projectClassifications,
+  projectContributors,
+  projectDates,
+  projectIdentifiers,
+  projectRelations,
+  projectTitles,
+} from "../lib/storage2";
 
 interface IngestDocid {
   norm: string;
@@ -353,6 +361,116 @@ adminRoutes.post("/admin/ingest/:flavor", async (c) => {
     }
   } catch (e) {
     console.error(`ingest batch failed for flavor ${flavor}: ${String(e)}`);
+    return c.text(`Ingest failed: ${String(e)}`, 500);
+  }
+
+  await putBlobs(c.env.BUCKET, chunk.blobs);
+
+  return c.json({ ok: true, rows: chunk.rows.length, blobs: Object.keys(chunk.blobs).length });
+});
+
+// Storage v2 ingest (TODO.api/02): rows carry the lossless model JSON and
+// the dataset-provided lookup keys; the projection tables are rebuilt
+// mechanically from `data` here, so a schema projection change never needs
+// a producer change — re-post the same chunks.
+interface IngestV2Row {
+  key: string;
+  file: string;
+  data: Record<string, unknown>;
+  keys: string[];
+}
+
+interface IngestV2Chunk {
+  flavor: string;
+  repo: string;
+  final?: boolean;
+  lastModified?: string | null;
+  relatonVersion?: string;
+  rows: IngestV2Row[];
+  blobs: Record<string, string>;
+}
+
+adminRoutes.post("/admin/ingest-v2/:flavor", async (c) => {
+  if (!c.env.ADMIN_TOKEN || !tokenMatches(c.req.header("Authorization"), c.env.ADMIN_TOKEN)) {
+    return c.text("Forbidden.", 403);
+  }
+
+  const flavor = c.req.param("flavor").replace(/[^a-z0-9-]/gi, "");
+  const chunk = await c.req.json<IngestV2Chunk>();
+  if (chunk.flavor !== flavor) return c.text("Flavor mismatch.", 400);
+
+  const ingestedAt = new Date().toISOString();
+  const stmts: D1PreparedStatement[] = [];
+  for (const row of chunk.rows) {
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO documents_v2 (key, flavor, file, data, indexed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (key) DO UPDATE SET
+           flavor = excluded.flavor, file = excluded.file, data = excluded.data,
+           indexed_at = excluded.indexed_at`,
+      ).bind(row.key, flavor, row.file, JSON.stringify(row.data), ingestedAt),
+    );
+    stmts.push(c.env.DB.prepare("DELETE FROM doc_keys WHERE document = ?1").bind(row.key));
+    for (const k of row.keys) {
+      stmts.push(
+        c.env.DB.prepare("INSERT INTO doc_keys (key, document) VALUES (?1, ?2) ON CONFLICT DO NOTHING")
+          .bind(k, row.key),
+      );
+    }
+
+    const projections: [string, () => D1PreparedStatement[]][] = [
+      ["titles", () => projectTitles(row.data).map((t) =>
+        c.env.DB.prepare("INSERT INTO titles (document, lang, type, text) VALUES (?1, ?2, ?3, ?4)")
+          .bind(row.key, t.lang, t.type, t.text))],
+      ["identifiers", () => projectIdentifiers(row.data).map((i) =>
+        c.env.DB.prepare("INSERT INTO identifiers (document, raw, type, is_primary) VALUES (?1, ?2, ?3, ?4)")
+          .bind(row.key, i.raw, i.type, i.isPrimary))],
+      ["dates", () => projectDates(row.data).map((d) =>
+        c.env.DB.prepare("INSERT INTO dates (document, type, on_date) VALUES (?1, ?2, ?3)")
+          .bind(row.key, d.type, d.onDate))],
+      ["contributors", () => projectContributors(row.data).map((p) =>
+        c.env.DB.prepare("INSERT INTO contributors (document, role, name, org_abbrev) VALUES (?1, ?2, ?3, ?4)")
+          .bind(row.key, p.role, p.name, p.orgAbbrev))],
+      ["relations", () => projectRelations(row.data).map((r) =>
+        c.env.DB.prepare("INSERT INTO relations (document, type, target) VALUES (?1, ?2, ?3)")
+          .bind(row.key, r.type, r.target))],
+      ["classifications", () => projectClassifications(row.data).map((cl) =>
+        c.env.DB.prepare("INSERT INTO classifications (document, type, value) VALUES (?1, ?2, ?3)")
+          .bind(row.key, cl.type, cl.value))],
+    ];
+    for (const [table, build] of projections) {
+      stmts.push(c.env.DB.prepare(`DELETE FROM ${table} WHERE document = ?1`).bind(row.key));
+      stmts.push(...build());
+    }
+  }
+
+  if (chunk.final) {
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO flavors_v2 (flavor, repo, last_modified, indexed_at, doc_count)
+         VALUES (?1, ?2, ?3, ?4, (SELECT COUNT(*) FROM documents_v2 WHERE flavor = ?1))
+         ON CONFLICT (flavor) DO UPDATE SET
+           repo = excluded.repo, last_modified = excluded.last_modified,
+           indexed_at = excluded.indexed_at, doc_count = excluded.doc_count`,
+      ).bind(flavor, chunk.repo, chunk.lastModified ?? null, ingestedAt),
+    );
+    if (chunk.relatonVersion) {
+      stmts.push(
+        c.env.DB.prepare(
+          `INSERT INTO meta (key, value) VALUES ('relaton_version', ?1)
+           ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+        ).bind(chunk.relatonVersion),
+      );
+    }
+  }
+
+  try {
+    for (let i = 0; i < stmts.length; i += 90) {
+      await c.env.DB.batch(stmts.slice(i, i + 90));
+    }
+  } catch (e) {
+    console.error(`ingest-v2 batch failed for flavor ${flavor}: ${String(e)}`);
     return c.text(`Ingest failed: ${String(e)}`, 500);
   }
 
