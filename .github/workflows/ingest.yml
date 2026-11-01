@@ -152,6 +152,7 @@ jobs:
       - name: Ingest into storage v2
         env:
           ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           LIMIT: ${{ inputs.limit }}
         run: |
           args=""

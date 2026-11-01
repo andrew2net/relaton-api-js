@@ -160,6 +160,7 @@ async function ingestV2(flavor, values, base, token) {
   const { produceV2Chunks } = await import("../src/ingest/produce.ts");
   const before = new Date().toISOString();
   let index = 0;
+  let posted = 0;
   for await (const chunk of produceV2Chunks({
     flavor,
     pagesBase: values.pages ?? `https://relaton.github.io/relaton-data-${flavor}`,
@@ -171,7 +172,14 @@ async function ingestV2(flavor, values, base, token) {
   })) {
     await postJson(`${base}/admin/ingest-v2/${flavor}`, token, JSON.stringify(chunk));
     index += 1;
+    posted += chunk.rows.length;
     console.log(`${flavor}: chunk ${index} ok (rows=${chunk.rows.length})`);
+  }
+  // A wave that ingests nothing is an index/data mismatch, not success —
+  // fail loudly so the rollout notices (iana/calconnect taught us this).
+  if (posted === 0) {
+    console.error(`${flavor}: ingested 0 rows — the index rows and the dataset files disagree`);
+    process.exit(1);
   }
   await reconcile(flavor, base, true, token, before);
 }
