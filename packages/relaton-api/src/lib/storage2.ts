@@ -139,3 +139,89 @@ export async function getDocumentByLookupKey(db: D1Database, key: string): Promi
     indexedAt: doc.indexed_at,
   };
 }
+
+export interface SearchFilters {
+  cursor?: string | null;
+  flavor?: string | null;
+  year?: number | null;
+  doctype?: string | null;
+  status?: string | null;
+  q?: string | null;
+  title?: string | null;
+  contributor?: string | null;
+  relationType?: string | null;
+  relationTarget?: string | null;
+}
+
+export interface SearchRow {
+  key: string;
+  flavor: string;
+  file: string;
+}
+
+// One key-ordered page over documents_v2, filters hitting the projection
+// tables — the single SQL the v3 REST collection and the GraphQL
+// connection share. `cursor` is the last key served (inclusive-exclusive
+// against the ORDER BY); the caller asks for limit+1 rows to detect
+// hasNextPage.
+export async function searchDocumentPages(
+  db: D1Database,
+  opts: SearchFilters & { limit: number },
+): Promise<SearchRow[]> {
+  const conditions: string[] = [];
+  const binds: (string | number)[] = [];
+  const bind = (value: string | number): string => `?${binds.push(value)}`;
+
+  if (opts.cursor) conditions.push(`d.key > ${bind(opts.cursor)}`);
+  if (opts.flavor) conditions.push(`d.flavor = ${bind(opts.flavor)}`);
+  if (opts.year) conditions.push(`EXISTS (SELECT 1 FROM dates t WHERE t.document = d.key AND t.on_date LIKE ${bind(`${opts.year}%`)})`);
+  if (opts.doctype) conditions.push(`JSON_EXTRACT(d.data, '$.doctype') = ${bind(opts.doctype)}`);
+  if (opts.status) conditions.push(`JSON_EXTRACT(d.data, '$.status.stage') = ${bind(opts.status)}`);
+  if (opts.q) conditions.push(`EXISTS (SELECT 1 FROM titles t WHERE t.document = d.key AND t.text LIKE ${bind(`%${opts.q}%`)})`);
+  if (opts.title) conditions.push(`EXISTS (SELECT 1 FROM titles t WHERE t.document = d.key AND t.text LIKE ${bind(`%${opts.title}%`)})`);
+  if (opts.contributor) {
+    conditions.push(
+      `EXISTS (SELECT 1 FROM contributors c WHERE c.document = d.key AND (c.name LIKE ${bind(`%${opts.contributor}%`)} OR c.org_abbrev = ${bind(opts.contributor)}))`,
+    );
+  }
+  if (opts.relationType || opts.relationTarget) {
+    conditions.push(
+      `EXISTS (SELECT 1 FROM relations r WHERE r.document = d.key
+         AND (${opts.relationType ? `r.type = ${bind(opts.relationType)}` : "1"}
+         AND ${opts.relationTarget ? `r.target LIKE ${bind(`%${opts.relationTarget}%`)}` : "1"}))`,
+    );
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const { results } = await db
+    .prepare(`SELECT d.key, d.flavor, d.file FROM documents_v2 d ${where} ORDER BY d.key LIMIT ${bind(opts.limit + 1)}`)
+    .bind(...binds)
+    .all<SearchRow>();
+  return results ?? [];
+}
+
+// Title (main, first) and primary docidentifier lookups for a page of keys.
+export async function pageSummaries(
+  db: D1Database,
+  keys: string[],
+): Promise<{ titleOf: Map<string, string>; primaryOf: Map<string, string> }> {
+  if (!keys.length) return { titleOf: new Map(), primaryOf: new Map() };
+  const placeholders = keys.map((_, i) => `?${i + 1}`).join(",");
+
+  const titles = await db
+    .prepare(
+      `SELECT document, text FROM titles WHERE document IN (${placeholders}) AND type = 'main' LIMIT 200`,
+    )
+    .bind(...keys)
+    .all<{ document: string; text: string }>();
+  const titleOf = new Map<string, string>();
+  for (const t of titles.results ?? []) if (!titleOf.has(t.document)) titleOf.set(t.document, t.text);
+
+  const primaries = await db
+    .prepare(
+      `SELECT document, raw FROM identifiers WHERE document IN (${placeholders}) AND is_primary = 1 LIMIT 200`,
+    )
+    .bind(...keys)
+    .all<{ document: string; raw: string }>();
+  return { titleOf, primaryOf: new Map(primaries.results?.map((r) => [r.document, r.raw])) };
+}
