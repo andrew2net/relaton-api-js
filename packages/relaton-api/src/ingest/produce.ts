@@ -62,7 +62,8 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
   let fromChunk = opts.fromChunk ?? 0;
   let remaining = opts.maxRows ?? Infinity;
 
-  const manifest = await pull(fetchImpl, `${pages}/index/manifest.json`).then((r) => r.json() as Promise<{ shards: number }>);
+  const manifest = await pull(fetchImpl, `${pages}/index/manifest.json`)
+    .then((r) => r.json() as Promise<{ shards: number; index?: string }>);
   if (!Number.isInteger(manifest.shards) || manifest.shards < 0) throw new Error("manifest has no shard count");
   log(`manifest ok, shards=${manifest.shards}`);
 
@@ -78,16 +79,15 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
       for (const rows of bodies) if (rows) shardRows.push(...rows);
     }
   } else {
-    // Small indexes hit a generator bug (shards: 0 with rows present); the
-    // committed index-v2.yaml still carries the rows. Those rows name only
-    // the file — the key comes from each document's own primary
-    // docidentifier once loaded.
-    const yaml = await pull(fetchImpl, `${pages}/index-v2.yaml`).then((r) => r.text());
+    // Below the sharding threshold the contract publishes no shard files —
+    // only the monolith, named by the manifest's `index` field.
+    if (!manifest.index) throw new Error("manifest has shards: 0 but names no index artifact");
+    const yaml = await pull(fetchImpl, `${pages}/${manifest.index}.yaml`).then((r) => r.text());
     for (const row of (loadYaml(yaml) as { ":file"?: string }[] | null) ?? []) {
       if (row[":file"]) shardRows.push({ r: "", file: row[":file"] });
     }
   }
-  log(`${shardRows.length} index rows${manifest.shards === 0 ? " (from index-v2.yaml — manifest publishes no shards)" : ""}`);
+  log(`${shardRows.length} index rows${manifest.shards === 0 ? ` (from ${manifest.index}.yaml — below the sharding threshold)` : ""}`);
 
   // Some datasets map several keys to one file (IANA sub-registries live
   // inside the registry document); the first key wins the document, the
