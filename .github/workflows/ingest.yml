@@ -25,6 +25,10 @@ on:
         description: "Reconcile cutoff: delete rows not re-stamped since this ISO timestamp"
         required: false
         default: ""
+      v2_flavors:
+        description: "Space-separated flavors to also ingest into storage v2 (documents_v2)"
+        required: false
+        default: ""
   # relaton-data-* repos dispatch this on push (client_payload.flavor), so
   # dataset updates reach the API on their slice immediately instead of
   # waiting for the weekly sweep.
@@ -111,6 +115,63 @@ jobs:
         env:
           ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
         run: tools/post_chunks.sh tools/out/${{ matrix.flavor }} https://api.relaton.org "$ADMIN_TOKEN"
+
+  # Storage v2 rollout (TODO.api/02): the pure-TS producer walks the
+  # flavor's Pages machine index and posts model-JSON chunks to
+  # /admin/ingest-v2. Dispatch-driven per flavor — a full-flavor run
+  # fetches every dataset document, so the fleet fills flavor by flavor,
+  # not in the weekly sweep.
+  v2-matrix:
+    if: github.event_name == 'workflow_dispatch' && inputs.v2_flavors != ''
+    runs-on: ubuntu-latest
+    outputs:
+      flavors: ${{ steps.set.outputs.flavors }}
+    steps:
+      - id: set
+        env:
+          FLAVORS: ${{ inputs.v2_flavors }}
+        run: echo "flavors=$(echo "$FLAVORS" | jq -Rc 'split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+
+  ingest-v2:
+    needs: v2-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: ${{ fromJSON(needs.v2-matrix.outputs.flavors) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Ingest into storage v2
+        env:
+          ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          args=""
+          [ -n "$LIMIT" ] && args="$args --limit $LIMIT"
+          node packages/relaton-api/bin/relaton-api.mjs ingest ${{ matrix.flavor }} \
+            --v2 --base https://api.relaton.org --token-env ADMIN_TOKEN $args
+
+  # Only the completed v2 wave reconciles: rows the run re-stamped stay,
+  # ghosts (renamed/churned documents) go. A failed leg skips it.
+  reconcile-v2:
+    needs: [v2-matrix, ingest-v2]
+    if: always() && needs.ingest-v2.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reconcile v2 flavors
+        env:
+          ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
+        run: |
+          for f in $(echo '${{ needs.v2-matrix.outputs.flavors }}' | jq -r '.[]'); do
+            echo "reconciling v2 $f (before ${{ github.run_started_at }})"
+            curl -sf -X POST "https://api.relaton.org/admin/reconcile-v2/$f" \
+              -H "Authorization: Bearer $ADMIN_TOKEN" \
+              -H "content-type: application/json" \
+              -d "{\"before\": \"${{ github.run_started_at }}\"}" | jq -c .
+          done
 
   # The weekly sweep is the only event that re-stamps every flavor in one
   # run, so it is the only safe reconcile trigger: rows the run did not
