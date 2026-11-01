@@ -1,10 +1,10 @@
-import bipm from "../data/update-codes/bipm.json";
-import ccsds from "../data/update-codes/ccsds.json";
-import iec from "../data/update-codes/iec.json";
-import ieee from "../data/update-codes/ieee.json";
-import iso from "../data/update-codes/iso.json";
-import nist from "../data/update-codes/nist.json";
-import plateau from "../data/update-codes/plateau.json";
+import bipm from "../data/update-codes/bipm.json" with { type: "json" };
+import ccsds from "../data/update-codes/ccsds.json" with { type: "json" };
+import iec from "../data/update-codes/iec.json" with { type: "json" };
+import ieee from "../data/update-codes/ieee.json" with { type: "json" };
+import iso from "../data/update-codes/iso.json" with { type: "json" };
+import nist from "../data/update-codes/nist.json" with { type: "json" };
+import plateau from "../data/update-codes/plateau.json" with { type: "json" };
 
 type Rule = [string, string];
 

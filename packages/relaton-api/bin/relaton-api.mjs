@@ -89,13 +89,18 @@ async function ingest(...argv) {
     args: argv.slice(1),
     options: {
       chunks: { type: "string" },
+      v2: { type: "boolean" },
       pages: { type: "string" },
+      "repo-base": { type: "string" },
+      "from-chunk": { type: "string" },
+      limit: { type: "string" },
+      "chunk-size": { type: "string" },
       base: { type: "string" },
       "token-env": { type: "string" },
     },
   });
   if (!flavor) {
-    console.error("usage: relaton-api ingest <flavor> [--chunks DIR] [--pages URL] [--base URL] [--token-env NAME]");
+    console.error("usage: relaton-api ingest <flavor> [--v2] [--chunks DIR] [--pages URL] [--base URL] [--token-env NAME]");
     process.exit(1);
   }
   const config = loadConfig();
@@ -109,20 +114,25 @@ async function ingest(...argv) {
       console.error(`no chunk-*.json files in ${dir}`);
       process.exit(1);
     }
-    return ingestChunks(flavor, names.map((name) => ({ name, body: readFileSync(join(dir, name), "utf8") })), base, token);
+    const endpoint = values.v2 ? "ingest-v2" : "ingest";
+    const files = names.map((name) => ({ name, body: readFileSync(join(dir, name), "utf8") }));
+    return postChunks(flavor, files, `${base}/admin/${endpoint}`, token)
+      .then((before) => reconcile(flavor, base, values.v2, token, before));
   }
+  if (values.v2) return ingestV2(flavor, values, base, token);
   return ingestMachineIndex(flavor, values.pages, base, token);
 }
 
-// Post the chunk files the Ruby workflow (build_ingest.rb) produced, then
-// reconcile: rows the wave never re-stamped are ghosts and get deleted.
-export async function ingestChunks(flavor, files, base, token, { attempts = 4 } = {}) {
+// Post the chunk files (Ruby workflow output for v1, producer output for
+// v2), then reconcile: rows the wave never re-stamped are ghosts and get
+// deleted. Returns the wave start so reconcile can be issued separately.
+async function postChunks(flavor, files, url, token, { attempts = 4 } = {}) {
   const before = new Date().toISOString();
   const failed = [];
   for (const { name, body } of files) {
     process.stdout.write(`${name}: posting…`);
     try {
-      const res = await postJson(`${base}/admin/ingest/${flavor}`, token, body, attempts);
+      const res = await postJson(url, token, body, attempts);
       console.log(` ok (rows=${res.rows}, blobs=${res.blobs})`);
     } catch (e) {
       console.log(` FAILED: ${String(e).slice(0, 200)}`);
@@ -133,8 +143,35 @@ export async function ingestChunks(flavor, files, base, token, { attempts = 4 } 
     console.error(`${flavor}: ${failed.length} chunk(s) failed: ${failed.join(", ")}`);
     process.exit(1);
   }
-  const reconciliation = await postJson(`${base}/admin/reconcile/${flavor}`, token, JSON.stringify({ before }));
-  console.log(`${flavor}: reconciled, deleted ${reconciliation.deleted} stale rows`);
+  return before;
+}
+
+async function reconcile(flavor, base, v2, token, before) {
+  const endpoint = v2 ? "reconcile-v2" : "reconcile";
+  const res = await postJson(`${base}/admin/${endpoint}/${flavor}`, token, JSON.stringify({ before }));
+  console.log(`${flavor}: reconciled, deleted ${res.deleted} stale rows`);
+}
+
+// Run the storage v2 producer live: walk the machine index, post each
+// chunk as it fills, reconcile once the wave completes.
+async function ingestV2(flavor, values, base, token) {
+  const { produceV2Chunks } = await import("../src/ingest/produce.ts");
+  const before = new Date().toISOString();
+  let index = 0;
+  for await (const chunk of produceV2Chunks({
+    flavor,
+    pagesBase: values.pages ?? `https://relaton.github.io/relaton-data-${flavor}`,
+    repoBase: values["repo-base"],
+    chunkSize: values["chunk-size"] ? Number(values["chunk-size"]) : undefined,
+    fromChunk: values["from-chunk"] ? Number(values["from-chunk"]) : 0,
+    maxRows: values.limit ? Number(values.limit) : undefined,
+    onProgress: (m) => console.log(`${flavor}: ${m}`),
+  })) {
+    await postJson(`${base}/admin/ingest-v2/${flavor}`, token, JSON.stringify(chunk));
+    index += 1;
+    console.log(`${flavor}: chunk ${index} ok (rows=${chunk.rows.length})`);
+  }
+  await reconcile(flavor, base, true, token, before);
 }
 
 // Mirror the Pages machine index byte-for-byte: manifest + every shard that
@@ -330,7 +367,7 @@ async function check() {
 
 const commands = { init: scaffold, check, deploy, ingest, "": usage };
 
-export const __cli = { apiBase, adminToken, loadConfig, postJson, ingestMachineIndex, ingestChunks, resolveEnvValue };
+export const __cli = { apiBase, adminToken, loadConfig, postJson, postChunks, reconcile, ingestMachineIndex, ingestV2, resolveEnvValue };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const fn = commands[command ?? ""];

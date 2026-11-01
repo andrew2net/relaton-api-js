@@ -5,12 +5,20 @@ export declare function buildWranglerConfig(
   opts?: { apiVersion?: string },
 ): Record<string, any>;
 
-export declare function ingestChunks(
+export declare function postChunks(
   flavor: string,
   files: { name: string; body: string }[],
-  base: string,
+  url: string,
   token: string,
   opts?: { attempts?: number },
+): Promise<string>;
+
+export declare function reconcile(
+  flavor: string,
+  base: string,
+  v2: boolean,
+  token: string,
+  before: string,
 ): Promise<void>;
 
 export declare const __cli: {
@@ -18,18 +26,25 @@ export declare const __cli: {
   adminToken(config: unknown, envOverride?: string): string;
   loadConfig(dir?: string): unknown;
   postJson(url: string, token: string, body: string, attempts?: number): Promise<unknown>;
+  postChunks(
+    flavor: string,
+    files: { name: string; body: string }[],
+    url: string,
+    token: string,
+    opts?: { attempts?: number },
+  ): Promise<string>;
+  reconcile(flavor: string, base: string, v2: boolean, token: string, before: string): Promise<void>;
   ingestMachineIndex(
     flavor: string,
     pagesBase: string | undefined,
     base: string,
     token: string,
   ): Promise<void>;
-  ingestChunks(
+  ingestV2(
     flavor: string,
-    files: { name: string; body: string }[],
+    values: Record<string, string | boolean | undefined>,
     base: string,
     token: string,
-    opts?: { attempts?: number },
   ): Promise<void>;
   resolveEnvValue(value: unknown): unknown;
 };

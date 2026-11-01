@@ -479,6 +479,37 @@ adminRoutes.post("/admin/ingest-v2/:flavor", async (c) => {
   return c.json({ ok: true, rows: chunk.rows.length, blobs: Object.keys(chunk.blobs).length });
 });
 
+// Storage v2 ghost cleanup: same semantics as the v1 reconcile, over the
+// v2 tables — documents_v2 rows of the flavor the wave never re-stamped.
+adminRoutes.post("/admin/reconcile-v2/:flavor", async (c) => {
+  if (!c.env.ADMIN_TOKEN || !tokenMatches(c.req.header("Authorization"), c.env.ADMIN_TOKEN)) {
+    return c.text("Forbidden.", 403);
+  }
+
+  const flavor = c.req.param("flavor").replace(/[^a-z0-9-]/gi, "");
+  const { before } = await c.req.json<{ before?: string }>();
+  if (!before) return c.text("before timestamp is required.", 400);
+  const cutoff = Date.parse(before);
+  if (Number.isNaN(cutoff)) return c.text("before is not a timestamp.", 400);
+  if (cutoff > Date.now() + 5 * 60_000) return c.text("before must not be in the future.", 400);
+
+  const stale = "flavor = ?1 AND (indexed_at IS NULL OR indexed_at < ?2)";
+  const doomed = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM documents_v2 WHERE ${stale}`,
+  ).bind(flavor, before).first<{ n: number }>();
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM doc_keys WHERE document IN (SELECT key FROM documents_v2 WHERE ${stale})`).bind(flavor, before),
+    c.env.DB.prepare(`DELETE FROM documents_v2 WHERE ${stale}`).bind(flavor, before),
+    c.env.DB.prepare(
+      `UPDATE flavors_v2 SET doc_count = (SELECT COUNT(*) FROM documents_v2 WHERE flavor = ?1)
+       WHERE flavor = ?1`,
+    ).bind(flavor),
+  ]);
+
+  return c.json({ flavor, before, deleted: doomed?.n ?? 0 });
+});
+
 // Delete a flavor's ghost rows: documents whose file_path was not touched
 // since `before` (rows the current ingest generation never re-stamped).
 // Shards cannot prune mid-wave — each shard only sees its own window — so

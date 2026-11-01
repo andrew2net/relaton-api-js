@@ -1,4 +1,4 @@
-import type { Identifier } from "./types";
+import type { Identifier } from "./types.ts";
 
 // Flavors whose canonical form is the (update_codes-normalized) input itself.
 export function parseSimple(flavor: string, input: string): Identifier {

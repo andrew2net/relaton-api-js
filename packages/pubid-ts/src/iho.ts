@@ -1,4 +1,4 @@
-import type { Identifier } from "./types";
+import type { Identifier } from "./types.ts";
 
 export function parseIho(input: string): Identifier | null {
   if (!/^[A-Z]-\d/.test(input) && !/^IHO /.test(input)) return null;
