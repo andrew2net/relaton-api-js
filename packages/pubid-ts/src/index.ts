@@ -1,12 +1,12 @@
-import { parseIeee } from "./ieee";
-import { parseIho } from "./iho";
-import { parseIso } from "./iso";
-import { parseSimple } from "./simple";
-import type { Identifier } from "./types";
-import { applyUpdateCodes } from "./update-codes";
+import { parseIeee } from "./ieee.ts";
+import { parseIho } from "./iho.ts";
+import { parseIso } from "./iso.ts";
+import { parseSimple } from "./simple.ts";
+import type { Identifier } from "./types.ts";
+import { applyUpdateCodes } from "./update-codes.ts";
 
-export type { Identifier, Supplement } from "./types";
-export { applyUpdateCodes } from "./update-codes";
+export type { Identifier, Supplement } from "./types.ts";
+export { applyUpdateCodes } from "./update-codes.ts";
 
 export function detectFlavor(code: string): string | null {
   if (/^(ISO|JCGM)/.test(code)) return "iso";
@@ -48,4 +48,4 @@ export function yearOf(code: string, flavor?: string): string | null {
   return parse(code, flavor)?.year ?? null;
 }
 
-export * from "./keys";
+export * from "./keys.ts";

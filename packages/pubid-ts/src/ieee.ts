@@ -1,4 +1,4 @@
-import type { Identifier } from "./types";
+import type { Identifier } from "./types.ts";
 
 const IEEE_ORDER = ["ISO", "IEC", "IEEE", "ITU"];
 

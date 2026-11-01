@@ -29,7 +29,7 @@ export function allPartsKey(norm: string): string {
   return undatedKey(norm).replace(TRAILING_PART, "");
 }
 
-import { parse } from "./index";
+import { parse } from "./index.ts";
 
 export interface DerivedKeys {
   norm: string;

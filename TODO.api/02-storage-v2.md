@@ -1,14 +1,20 @@
 # 02 — Storage v2: structured documents in D1
 
-Status (2026-11-01): slice 1 shipped — `migrations/0007_storage_v2.sql`
+Status (2026-11-01): slices 1-2 shipped — `migrations/0007_storage_v2.sql`
 (`documents_v2`/`doc_keys`/six projection tables/`flavors_v2`, v1 stays
 live until cutover), `POST /admin/ingest-v2/:flavor` (rows carry the
 lossless model JSON + dataset-provided keys; projections are rebuilt
 mechanically from `data` server-side, so a projection change needs no
-producer change), and the `src/lib/storage2.ts` loader
-(`getDocument`/`getDocumentByLookupKey`). Remaining: the Ruby/TS chunk
-producer from the datasets, re-ingest, v3 routes over the loader, then
-the v1 cutover.
+producer change), the `src/lib/storage2.ts` loader
+(`getDocument`/`getDocumentByLookupKey`), `POST /admin/reconcile-v2/
+:flavor`, and the producer: `src/ingest/produce.ts` walks a flavor's
+Pages machine index, loads each dataset document, and yields chunks the
+CLI posts live (`relaton-api ingest <flavor> --v2`, `--from-chunk`/
+`--limit`/`--chunk-size`; a truncated wave never stamps `final`, so the
+ghost cleanup cannot eat unreached rows). pubid-ts's internal imports
+carry explicit `.ts`/`with { type: "json" }` forms so plain node can run
+the CLI. Remaining: the full re-ingest run per flavor, v3 routes over
+the loader, then the v1 cutover.
 
 Goal: stop smushing. The document unit is the model's JSON; queries hit
 mechanical projections and dataset-provided keys. No lossy columns.

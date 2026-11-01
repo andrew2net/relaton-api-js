@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildWranglerConfig, ingestChunks, __cli } from "../bin/relaton-api.mjs";
+import { buildWranglerConfig, __cli } from "../bin/relaton-api.mjs";
 
 // The CLI runs in Node, not in the workerd pool this suite boots; only its
 // process handle and Buffer are touched here.
@@ -11,7 +11,7 @@ declare const Buffer: {
   from(input: string): { toString(encoding: string): string };
 };
 
-const { ingestMachineIndex, apiBase, adminToken } = __cli;
+const { ingestMachineIndex, apiBase, adminToken, postChunks, reconcile } = __cli;
 
 const b64 = (s: string) => Buffer.from(s).toString("base64");
 
@@ -102,31 +102,42 @@ describe("ingest: machine-index mirror", () => {
 });
 
 describe("ingest: chunk posting", () => {
-  it("posts every chunk verbatim, then reconciles with the wave start", async () => {
+  it("posts every chunk verbatim to the given endpoint and returns the wave start", async () => {
     const posts: { url: string; init?: RequestInit }[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
       posts.push({ url: String(input), init });
       return jsonResponse({ ok: true, rows: 2, blobs: 2 });
     }));
 
-    await ingestChunks(
+    const before = await postChunks(
       "iso",
       [
         { name: "chunk-01.json", body: '{"rows":[1,2]}' },
         { name: "chunk-02.json", body: '{"rows":[3,4]}' },
       ],
-      "https://api.example.org",
+      "https://api.example.org/admin/ingest-v2/iso",
       "tok",
     );
 
     expect(posts.map((p) => p.url)).toEqual([
-      "https://api.example.org/admin/ingest/iso",
-      "https://api.example.org/admin/ingest/iso",
-      "https://api.example.org/admin/reconcile/iso",
+      "https://api.example.org/admin/ingest-v2/iso",
+      "https://api.example.org/admin/ingest-v2/iso",
     ]);
     expect(posts[0]!.init!.body).toBe('{"rows":[1,2]}');
-    const reconcile = JSON.parse(String(posts[2]!.init!.body));
-    expect(() => Date.parse(reconcile.before)).not.toThrow();
+    expect(() => Date.parse(before)).not.toThrow();
+  });
+
+  it("reconcile targets the v2 endpoint when asked", async () => {
+    const posts: { url: string; init?: RequestInit }[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
+      posts.push({ url: String(input), init });
+      return jsonResponse({ deleted: 3 });
+    }));
+
+    await reconcile("iso", "https://api.example.org", true, "tok", "2026-11-01T00:00:00Z");
+
+    expect(posts.map((p) => p.url)).toEqual(["https://api.example.org/admin/reconcile-v2/iso"]);
+    expect(JSON.parse(String(posts[0]!.init!.body))).toEqual({ before: "2026-11-01T00:00:00Z" });
   });
 
   it("exits without reconciling when a chunk fails", async () => {
@@ -140,10 +151,10 @@ describe("ingest: chunk posting", () => {
     }) as never);
 
     await expect(
-      ingestChunks(
+      postChunks(
         "iso",
         [{ name: "chunk-01.json", body: "{}" }],
-        "https://api.example.org",
+        "https://api.example.org/admin/ingest/iso",
         "tok",
         { attempts: 1 },
       ),

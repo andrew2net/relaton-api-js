@@ -1,4 +1,4 @@
-import type { Identifier, Supplement } from "./types";
+import type { Identifier, Supplement } from "./types.ts";
 
 const COPUBLISHERS = ["IEC", "IEEE", "ITU", "ASTM", "SAE", "CIE", "HL7", "OASIS", "UN", "W3C", "IETF"];
 const STAGES = ["FDIS", "DIS", "AWI", "PRF", "BPUB", "CDTS", "DTR", "DTS", "PWI", "NP", "CD", "WD", "WI", "DDAM", "DAMD", "FDAM", "DCOR", "FDCOR", "DAD", "FDAD", "DSUPPL", "NDTR", "NDIS", "NDTS"];
