@@ -47,17 +47,17 @@ machine-index rollout; phase files 01-06 and 09-10 restored from the
 | # | File | Phase | Status |
 |---|---|---|---|
 | 01 | 01-ietf-unified-dataset.md | IETF dataset (#109) | dataset shipped as index-v2; API import switch pending |
-| 02 | 02-storage-v2.md | D1 schema v2 | pending |
-| 03 | 03-api-v3.md | v3 surface | pending (v1 routes live; OpenAPI docs shipped) |
-| 04 | 04-graphql-model.md | model-typed GraphQL | pending (flat schema live) |
-| 05 | 05-json-schema.md | JSON Schema contract | pending |
+| 02 | 02-storage-v2.md | D1 schema v2 | **live and rolling out** (schema + ingest-v2/reconcile-v2 + producer shipped; fleet rollout in progress — see 02 status) |
+| 03 | 03-api-v3.md | v3 surface | **live on both stacks** (negotiation, ETag/immutable, cursor+Link, problem+json; /api/v1 removal = cutover) |
+| 04 | 04-graphql-model.md | model-typed GraphQL | **live** (replaced the flat schema; filters share the v3 SQL; relation traversal) |
+| 05 | 05-json-schema.md | JSON Schema contract | **live** (`/schema` serves the package-shipped schemas; strict ingest validation parked on a model ruling) |
 | 06 | 06-index-contract-all-flavors.md | index rollout | **in progress** (machine index v2 live; dataset alias keys imported and bare-variant derivation made structural — relaton-api-js#87/#88, relaton#395; query side pending) |
 | 07 | 07-npm-package.md | `@relaton/api` | **in progress** (library + CLI init/check/deploy/ingest done; npm publish + dogfood instance pending) |
 | 08 | 08-repo-decomposition.md | three-repo split | **in progress** (repo renamed; relaton-api-ruby created 2026-10-28 with Lambda-era founding history + the v3-subset Rack implementation; deployment repo conversion pending) |
-| 09 | 09-site-integration.md | relaton.org on v3 | pending (site now Astro) |
-| 10 | 10-observability-ops.md | ops | pending |
-| 11 | 11-ruby-gem.md | `relaton-api` gem | pending |
-| 12 | 12-conformance-suite.md | shared contract tests | **in progress** (fixtures + node runner shipped 2026-10-29, relaton-api-js#90; daily production drift alarm; ruby CI replays the same set) |
+| 09 | 09-site-integration.md | relaton.org on v3 | **live** (v3 demo with format negotiation, v3-first API page, per-flavor query links) |
+| 10 | 10-observability-ops.md | ops | **live in-repo** (AE datapoints, structured logs, rate-limit hook, runbook; dashboard/cron-export activation is deployment-side) |
+| 11 | 11-ruby-gem.md | `relaton-api` gem | **live on rubygems** (3.0.x via trusted publishing; v1+v3 surfaces; contract held in CI) |
+| 12 | 12-conformance-suite.md | shared contract tests | **done** — contract v1.1.0 (15 fixtures: /api/v1 + the v3 surface), versioned and SHA-pinned in the Ruby CI per contract/README.md; daily production drift alarm |
 | 13 | 13-code-quality-refactor.md | constitution applied | **in progress** (tools autoload refactor done; TS pass done) |
 | 14 | 14-key-semantics.md | key derivation | resolved |
 
