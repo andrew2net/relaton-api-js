@@ -11,7 +11,8 @@ const dir = dirname(fileURLToPath(import.meta.url));
 const base = (process.env.RELATON_API_BASE_URL ?? "https://api.relaton.org").replace(/\/+$/, "");
 const only = process.argv[2];
 
-const { fixtures } = JSON.parse(await readFile(join(dir, "fixtures.json"), "utf8"));
+const { version, fixtures } = JSON.parse(await readFile(join(dir, "fixtures.json"), "utf8"));
+console.log(`relaton-api contract v${version}: ${fixtures.length} fixtures against ${base}\n`);
 
 let failed = 0;
 for (const fixture of fixtures) {
@@ -54,5 +55,5 @@ for (const fixture of fixtures) {
   }
 }
 
-console.log(`\n${fixtures.length - failed}/${fixtures.length} fixtures pass against ${base}`);
+console.log(`\ncontract v${version}: ${fixtures.length - failed}/${fixtures.length} fixtures pass against ${base}`);
 process.exit(failed ? 1 : 0);
