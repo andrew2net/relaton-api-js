@@ -54,8 +54,11 @@ jobs:
   matrix:
     # A manual-reconcile dispatch runs reconcile-manual only: without this
     # gate the matrix falls back to the full flavor list and the run
-    # re-ingests the whole fleet beside the reconcile.
+    # re-ingests the whole fleet beside the reconcile. A v2-only dispatch
+    # (flavors unset, v2_flavors set) skips the v1 legs — a big flavor's
+    # full v1 re-ingest is the weekly sweep's job, not a side effect.
     if: github.event_name != 'repository_dispatch' && inputs.reconcile_flavor == ''
+      && (github.event_name != 'workflow_dispatch' || inputs.flavors != '' || inputs.v2_flavors == '')
     runs-on: ubuntu-latest
     outputs:
       flavors: ${{ steps.set.outputs.flavors }}
