@@ -103,7 +103,9 @@ async function ingest(...argv) {
     console.error("usage: relaton-api ingest <flavor> [--v2] [--chunks DIR] [--pages URL] [--base URL] [--token-env NAME]");
     process.exit(1);
   }
-  const config = loadConfig();
+  // CI runs the CLI from a repo checkout with no relaton-api.yaml; the
+  // explicit --base/--token-env flags carry everything then.
+  const config = existsSync("relaton-api.yaml") ? loadConfig() : {};
   const base = apiBase(config, values.base);
   const token = adminToken(config, values["token-env"]);
 
