@@ -18,3 +18,22 @@ its own implementation.
 `.github/workflows/contract.yml` runs the set daily against production
 and is `workflow_call`-able, so the deployment repo's post-deploy smoke
 can invoke it with its own `base_url`.
+
+## Versioning and pinning
+
+`fixtures.json` carries a `version` field, and the runner prints it — a
+CI log names the exact contract a suite was held to. This repository
+always runs the fixtures from its working tree; consumers pin a
+revision:
+
+- **relaton-api-ruby's CI** fetches `run.mjs` + `fixtures.json` from a
+  pinned commit SHA of this repo (the SHA in its `rake.yml`, named with
+  the contract version it carries). Upgrading the pin is a deliberate
+  PR there, driven by a fixture change here.
+- **The deployment smoke** (`contract.yml` `workflow_call`) runs from
+  the caller's checkout, so it is pinned by whichever ref the caller
+  checks out.
+
+Protocol for a fixture change here: bump `version` (patch for additive
+fixtures, minor for tightened assertions, major for a breaking change),
+merge, then raise the pin-bump PR in each consumer repo.

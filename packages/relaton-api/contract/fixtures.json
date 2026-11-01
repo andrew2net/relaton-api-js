@@ -1,5 +1,6 @@
 {
   "name": "relaton-api contract fixtures",
+  "version": "1.0.0",
   "description": "Executable contract (TODO.api/12): every fixture is a GET against a base URL. Assertions are the stable contract surface only — status, headers, and pinned identifiers — never titles or dates, which drift with the datasets.",
   "baseUrlEnv": "RELATON_API_BASE_URL",
   "fixtures": [
