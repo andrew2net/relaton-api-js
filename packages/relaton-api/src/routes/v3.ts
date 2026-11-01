@@ -128,11 +128,12 @@ v3Routes.openapi(keyRoute, async (c) => {
   const { key } = c.req.valid("param");
   const { format } = c.req.valid("query");
   // Exact key first; then the normalized lookup token (doc_keys carries
-  // the dataset's normKey forms), so "rfc 8446" and "RFC-8446" resolve
-  // like "RFC 8446" does — the site issue #26 complaint, on the v3 surface.
+  // the dataset's normKey forms), then the hyphen-stripped form — "rfc 8446"
+  // and "RFC-8446" resolve like "RFC 8446" does (site issue #26).
   const keyText = decodeURIComponent(key);
   const doc = (await getDocument(c.env.DB, keyText))
-    ?? (await getDocumentByLookupKey(c.env.DB, normKey(keyText)));
+    ?? (await getDocumentByLookupKey(c.env.DB, normKey(keyText)))
+    ?? (await getDocumentByLookupKey(c.env.DB, normKey(keyText).replace(/-/g, "")));
   if (!doc) return problem(c, 404, "Not Found", `unknown key ${keyText}`);
 
   const type = negotiate(c.req.header("Accept"), format);

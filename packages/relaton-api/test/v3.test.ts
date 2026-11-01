@@ -35,7 +35,7 @@ async function seed() {
       rows: [
         { key: "ISO 19115-1:2014", file: "data/iso-19115-1-2014.yaml", data: DOC("ISO 19115-1:2014", "2014", "Metadata"), keys: ["ISO19115-1:2014"] },
         { key: "ISO 19115-1:2018", file: "data/iso-19115-1-2018.yaml", data: DOC("ISO 19115-1:2018", "2018", "Metadata"), keys: ["ISO19115-1:2018"] },
-        { key: "ISO 99999:2999", file: "data/iso-99999.yaml", data: DOC("ISO 99999:2999", "2999", "No XML here"), keys: ["ISO99999:2999"] },
+        { key: "ISO 99999:2999", file: "data/iso-99999.yaml", data: DOC("ISO 99999:2999", "2999", "No XML here"), keys: ["ISO99999:2999", "ISO999992999"] },
       ],
       blobs: {
         "iso/data/iso-19115-1-2014": XML("ISO 19115-1:2014"),
@@ -121,6 +121,11 @@ describe("GET /v3/documents/{key}", () => {
       const body = await res.json<{ docidentifier: { content: string }[] }>();
       expect(body.docidentifier[0]!.content).toBe("ISO 19115-1:2014");
     }
+
+    // Hyphen variants resolve against hyphen-free tokens (RFC-8446 → RFC8446).
+    const hyphened = await SELF.fetch("http://localhost/v3/documents/ISO-99999-2999");
+    expect(hyphened.status).toBe(200);
+    expect(((await hyphened.json<{ docidentifier: { content: string }[] }>()).docidentifier[0]!).content).toBe("ISO 99999:2999");
   });
 
   it("404s as problem+json for an unknown key", async () => {
