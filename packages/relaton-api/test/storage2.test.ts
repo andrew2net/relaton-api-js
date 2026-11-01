@@ -183,4 +183,45 @@ describe("POST /admin/ingest-v2/:flavor", () => {
     expect((await env.DB.prepare("SELECT value FROM classifications WHERE document = 'IANA x/y'").all()).results)
       .toEqual([{ value: "35.240" }]);
   });
+
+  it("projects v1.2-era dataset shapes (docid/id, format-only titles, date values)", async () => {
+    // The shape the iana probe served first: `docid` with `id`, titles
+    // without `type`, dates carrying `value`, array-wrapped org names.
+    const oldSchema = {
+      "schema-version": "v1.2.9",
+      id: "IANAchannel-binding-types",
+      title: [{ content: "Channel-Binding Types", format: "text/plain" }],
+      type: "standard",
+      docid: [{ id: "IANA channel-binding-types", type: "IANA", primary: true }],
+      date: [{ type: "updated", value: "2022-07-28" }],
+      contributor: [{
+        organization: { name: [{ content: "Internet Assigned Numbers Authority" }], abbreviation: { content: "IANA" } },
+        role: [{ type: "publisher" }],
+      }],
+      language: ["en"],
+      script: ["Latn"],
+    };
+    const res = await postChunk([
+      { key: "IANA channel-binding-types", file: "data/channel-binding-types.yaml", data: oldSchema, keys: ["IANACHANNEL-BINDING-TYPES"] },
+    ]);
+    expect(res.status).toBe(200);
+
+    const titles = await env.DB.prepare("SELECT type, text FROM titles WHERE document = ?1")
+      .bind("IANA channel-binding-types").all();
+    expect(titles.results).toEqual([{ type: "main", text: "Channel-Binding Types" }]);
+
+    const ids = await env.DB.prepare("SELECT raw, type, is_primary FROM identifiers WHERE document = ?1")
+      .bind("IANA channel-binding-types").all();
+    expect(ids.results).toEqual([{ raw: "IANA channel-binding-types", type: "IANA", is_primary: 1 }]);
+
+    const dates = await env.DB.prepare("SELECT type, on_date FROM dates WHERE document = ?1")
+      .bind("IANA channel-binding-types").all();
+    expect(dates.results).toEqual([{ type: "updated", on_date: "2022-07-28" }]);
+
+    const contributors = await env.DB.prepare("SELECT role, name, org_abbrev FROM contributors WHERE document = ?1")
+      .bind("IANA channel-binding-types").all();
+    expect(contributors.results).toEqual([
+      { role: "publisher", name: "Internet Assigned Numbers Authority", org_abbrev: "IANA" },
+    ]);
+  });
 });
