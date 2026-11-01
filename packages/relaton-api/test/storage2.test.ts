@@ -152,4 +152,35 @@ describe("POST /admin/ingest-v2/:flavor", () => {
     expect(res.status).toBe(200);
     expect(await env.BUCKET.get("iso/data/iso-99999")).not.toBeNull();
   });
+
+  it("projects nested-content shapes without choking D1", async () => {
+    // Datasets (IANA among them) interchange strings and {content: ...} /
+    // {value: ...} shapes; every projection column is TEXT, so the
+    // extractors read through to the scalar and null the rest.
+    const nested = {
+      title: [{ content: { content: "Nested title" }, type: "main", language: [{ content: "en" }] }],
+      docidentifier: [{ content: { content: "IANA x/y" }, type: { value: "IANA" }, primary: true }],
+      date: [{ type: { value: "published" }, on: { content: "2024-01-01" } }],
+      contributor: [{ organization: { name: { content: "IANA" }, abbreviation: "IANA" }, role: [{ type: { content: "publisher" } }] }],
+      relation: [{ type: { content: "updates" }, bibitem: { docidentifier: [{ content: { content: "IANA x" } }] } }],
+      classification: [{ type: "ICS", value: { content: "35.240" } }],
+    };
+    const res = await postChunk([
+      { key: "IANA x/y", file: "data/x.yaml", data: nested, keys: ["IANAX/Y"] },
+    ]);
+    expect(res.status).toBe(200);
+
+    expect((await env.DB.prepare("SELECT text FROM titles WHERE document = 'IANA x/y'").all()).results)
+      .toEqual([{ text: "Nested title" }]);
+    expect((await env.DB.prepare("SELECT raw, type FROM identifiers WHERE document = 'IANA x/y'").all()).results)
+      .toEqual([{ raw: "IANA x/y", type: "IANA" }]);
+    expect((await env.DB.prepare("SELECT on_date FROM dates WHERE document = 'IANA x/y'").all()).results)
+      .toEqual([{ on_date: "2024-01-01" }]);
+    expect((await env.DB.prepare("SELECT role, name FROM contributors WHERE document = 'IANA x/y'").all()).results)
+      .toEqual([{ role: "publisher", name: "IANA" }]);
+    expect((await env.DB.prepare("SELECT type, target FROM relations WHERE document = 'IANA x/y'").all()).results)
+      .toEqual([{ type: "updates", target: "IANA x" }]);
+    expect((await env.DB.prepare("SELECT value FROM classifications WHERE document = 'IANA x/y'").all()).results)
+      .toEqual([{ value: "35.240" }]);
+  });
 });
