@@ -144,6 +144,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+      - run: npm ci
       - name: Ingest into storage v2
         env:
           ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
