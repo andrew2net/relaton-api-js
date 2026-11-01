@@ -283,7 +283,8 @@ const resolvers = {
   Query: {
     document: async (_p: unknown, args: { key: string }, ctx: GqlContext) =>
       (await getDocument(ctx.env.DB, args.key))
-      ?? (await getDocumentByLookupKey(ctx.env.DB, normKey(args.key))),
+      ?? (await getDocumentByLookupKey(ctx.env.DB, normKey(args.key)))
+      ?? (await getDocumentByLookupKey(ctx.env.DB, normKey(args.key).replace(/-/g, ""))),
 
     documents: async (_p: unknown, args: DocumentsArgs, ctx: GqlContext) => {
       const first = Math.min(Math.max(args.first ?? 20, 1), 100);
