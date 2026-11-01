@@ -1,7 +1,10 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { dump as dumpYaml } from "js-yaml";
 import type { AppEnv } from "../env";
-import { getDocument, pageSummaries, searchDocumentPages } from "../lib/storage2";
+import { getDocument, getDocumentByLookupKey, pageSummaries, searchDocumentPages } from "../lib/storage2";
+// Deep path: self-contained and extension-free, loadable under plain node
+// as well as the bundler (same import discipline produce.ts uses).
+import { normKey } from "pubid-ts/src/keys.ts";
 
 // API v3 (TODO.api/03): the modern surface over the storage v2 loader —
 // content negotiation, RFC 9457 problem+json errors, strong ETags with
@@ -124,8 +127,13 @@ function encodeCursor(key: string): string {
 v3Routes.openapi(keyRoute, async (c) => {
   const { key } = c.req.valid("param");
   const { format } = c.req.valid("query");
-  const doc = await getDocument(c.env.DB, decodeURIComponent(key));
-  if (!doc) return problem(c, 404, "Not Found", `unknown key ${key}`);
+  // Exact key first; then the normalized lookup token (doc_keys carries
+  // the dataset's normKey forms), so "rfc 8446" and "RFC-8446" resolve
+  // like "RFC 8446" does — the site issue #26 complaint, on the v3 surface.
+  const keyText = decodeURIComponent(key);
+  const doc = (await getDocument(c.env.DB, keyText))
+    ?? (await getDocumentByLookupKey(c.env.DB, normKey(keyText)));
+  if (!doc) return problem(c, 404, "Not Found", `unknown key ${keyText}`);
 
   const type = negotiate(c.req.header("Accept"), format);
   let body: string;
