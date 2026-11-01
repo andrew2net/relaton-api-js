@@ -5,6 +5,7 @@ import type { AppEnv } from "./env";
 import { adminRoutes } from "./routes/admin";
 import { restRoutes } from "./routes/rest";
 import { v3Routes } from "./routes/v3";
+import { schemaRoutes } from "./routes/schema";
 import { cloudStoreRoutes } from "./routes/cloudstore";
 import { machineIndexRoutes } from "./routes/machine_index";
 import { graphqlRoute } from "./routes/graphql";
@@ -155,6 +156,7 @@ export function createApp(configInput: unknown = {}) {
 
   app.route("/", restRoutes);
   app.route("/", v3Routes);
+  app.route("/", schemaRoutes);
   app.route("/", machineIndexRoutes);
   app.route("/", cloudStoreRoutes);
   app.route("/", adminRoutes);
