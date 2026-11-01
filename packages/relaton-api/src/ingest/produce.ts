@@ -55,7 +55,19 @@ async function pull(fetchImpl: typeof fetch, url: string): Promise<Response> {
 export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2Chunk> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const pages = trimSlash(opts.pagesBase);
-  const repo = trimSlash(opts.repoBase ?? `https://raw.githubusercontent.com/relaton/relaton-data-${opts.flavor}/main`);
+  // The dataset repos' default branch is not consistently main (the
+  // relaton-data-* repos default to v2) — resolve it once per run via the
+  // GitHub API, authenticated when GITHUB_TOKEN is around (CI), falling
+  // back to main when the API is unreachable.
+  const repoBase = opts.repoBase
+    ?? await fetchImpl(`https://api.github.com/repos/relaton/relaton-data-${opts.flavor}`, {
+      headers: (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.GITHUB_TOKEN
+        ? { Authorization: `Bearer ${(globalThis as { process?: { env?: Record<string, string | undefined> } }).process!.env!.GITHUB_TOKEN}` } : {},
+    })
+      .then((r) => (r.ok ? r.json() as Promise<{ default_branch: string }> : null))
+      .then((r) => `https://raw.githubusercontent.com/relaton/relaton-data-${opts.flavor}/${r?.default_branch ?? "main"}`)
+      .catch(() => `https://raw.githubusercontent.com/relaton/relaton-data-${opts.flavor}/main`);
+  const repo = trimSlash(repoBase);
   const chunkSize = opts.chunkSize ?? 100;
   const concurrency = opts.concurrency ?? 20;
   const log = opts.onProgress ?? (() => {});
