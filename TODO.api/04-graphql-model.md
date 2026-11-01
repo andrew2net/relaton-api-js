@@ -1,7 +1,16 @@
 # 04 — GraphQL mirroring the Relaton model
 
-Status (2026-10-28): the flat schema at `/graphql` is live; the
-model-faithful schema below is not started.
+Status (2026-11-01): the model-faithful schema is live and REPLACED the
+flat one. `src/routes/graphql.ts` mirrors the Relaton bibliographic
+model — BibliographicItem with docids/titles (all languages)/dates/
+contributors/relations/series/editions/languages/scripts/classifications/
+status/doctype and the opt-in `xml` from the R2 blobs — reading the
+lossless `data` JSON from storage v2. Filters (key/title/flavor/year/
+doctype/status/contributor/relation{type,target}) hit the projection
+tables through `searchDocumentPages`, the same SQL the v3 REST
+collection uses; Relation.item traverses a relation target to its own
+BibliographicItem. GraphiQL playground kept. Remaining: persisted
+queries for relaton.org's explorer (P5).
 
 Goal: the GraphQL schema mirrors relaton-models (the relaton-py
 `BibliographicItem` shape used by bibxml.ietf.org is the reference), not a
@@ -37,11 +46,10 @@ type Query {
 
 ## Tasks
 
-- [ ] Resolvers read `documents.data` (storage v2); filters hit projection
+- [x] Resolvers read `documents.data` (storage v2); filters hit projection
       tables via the same SQL the REST search uses.
-- [ ] Cross-repo relation traversal (`relation: { type: includes, target:
-      "iso:19115" }`).
-- [ ] Replace current flat schema; keep GraphiQL playground.
+- [x] Relation traversal (`relation: { type, target }`).
+- [x] Replace current flat schema; keep GraphiQL playground.
 - [ ] Persisted queries for relaton.org's explorer (later; P5).
 
 ## Acceptance

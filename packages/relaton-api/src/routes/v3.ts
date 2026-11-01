@@ -1,7 +1,7 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { dump as dumpYaml } from "js-yaml";
 import type { AppEnv } from "../env";
-import { getDocument } from "../lib/storage2";
+import { getDocument, pageSummaries, searchDocumentPages } from "../lib/storage2";
 
 // API v3 (TODO.api/03): the modern surface over the storage v2 loader —
 // content negotiation, RFC 9457 problem+json errors, strong ETags with
@@ -158,41 +158,15 @@ v3Routes.openapi(collectionRoute, async (c) => {
     return problem(c, 422, "Unprocessable Content", "cursor is not a valid token");
   }
 
-  const conditions: string[] = [];
-  const binds: (string | number)[] = [];
-  if (cursor !== null) {
-    conditions.push(`d.key > ?${binds.push(cursor)}`);
-  }
-  if (q.flavor) conditions.push(`d.flavor = ?${binds.push(q.flavor)}`);
-  if (q.year) conditions.push(`EXISTS (SELECT 1 FROM dates t WHERE t.document = d.key AND t.on_date LIKE ?${binds.push(`${q.year}%`)})`);
-  if (q.doctype) conditions.push(`JSON_EXTRACT(d.data, '$.doctype') = ?${binds.push(q.doctype)}`);
-  if (q.status) conditions.push(`JSON_EXTRACT(d.data, '$.status.stage') = ?${binds.push(q.status)}`);
-  if (q.q) conditions.push(`EXISTS (SELECT 1 FROM titles t WHERE t.document = d.key AND t.text LIKE ?${binds.push(`%${q.q}%`)})`);
+  const rows = await searchDocumentPages(c.env.DB, {
+    cursor, limit,
+    flavor: q.flavor, year: q.year ?? null, doctype: q.doctype,
+    status: q.status, q: q.q,
+  });
 
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const { results } = await c.env.DB.prepare(
-    `SELECT d.key, d.flavor, d.file FROM documents_v2 d ${where}
-     ORDER BY d.key LIMIT ?${binds.push(limit + 1)}`,
-  ).bind(...binds).all<{ key: string; flavor: string; file: string }>();
-
-  const rows = results ?? [];
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
-
-  const keys = page.map((r) => r.key);
-  const titles = keys.length
-    ? await c.env.DB.prepare(
-        `SELECT document, text FROM titles WHERE document IN (${keys.map((_, i) => `?${i + 1}`).join(",")}) AND type = 'main' LIMIT 200`,
-      ).bind(...keys).all<{ document: string; text: string }>()
-    : { results: [] };
-  const titleOf = new Map<string, string>();
-  for (const t of titles.results ?? []) if (!titleOf.has(t.document)) titleOf.set(t.document, t.text);
-  const primaries = keys.length
-    ? await c.env.DB.prepare(
-        `SELECT document, raw FROM identifiers WHERE document IN (${keys.map((_, i) => `?${i + 1}`).join(",")}) AND is_primary = 1 LIMIT 200`,
-      ).bind(...keys).all<{ document: string; raw: string }>()
-    : { results: [] };
-  const primaryOf = new Map(primaries.results?.map((r) => [r.document, r.raw]));
+  const { titleOf, primaryOf } = await pageSummaries(c.env.DB, page.map((r) => r.key));
 
   const items = page.map((r) => ({
     key: r.key,
