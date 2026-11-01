@@ -1,8 +1,17 @@
 # 03 — API v3: modern HTTP surface (no legacy)
 
-Status (2026-10-28): not started for v3 routes — `/api/v1/document`,
-`/api/v1/search` and `/api/v1/version` are still the surface. OpenAPI 3.1
-at `/openapi.json` and the `/docs` reference are already shipped.
+Status (2026-11-01): v3 live on the Workers stack over the storage v2
+loader — `src/routes/v3.ts`: `/v3/documents/{key}` (Accept negotiation
+for application/json | application/relaton+xml | application/yaml,
+`format` override, strong SHA-256 ETag + immutable Cache-Control,
+If-None-Match → 304, HEAD), `/v3/documents` (key-ordered cursor paging
+with Link headers; flavor/year/doctype/status/q filters; 422
+problem+json on a bad cursor), `/v3/flavors` and `/v3/version` from
+storage v2, RFC 9457 problem+json errors throughout, XML streamed from
+the R2 blobs (406 when none stored). OpenAPI 3.1 descriptions ride the
+zod-openapi routes. Remaining: `/api/v1/*` removal (the cutover, after
+the storage v2 re-ingest), edge-cache purge on re-ingest, and the same
+surface on the Ruby reference stack.
 
 Goal: replace `/api/v1/*` entirely. RFC 9457 errors, content negotiation,
 edge caching, cursor pagination, navigable relations.
