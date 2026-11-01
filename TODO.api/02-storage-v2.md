@@ -1,7 +1,14 @@
 # 02 — Storage v2: structured documents in D1
 
-Status (2026-10-28): not started — the v1 schema (migrations 0001-0006,
-derived norm/undated/allparts columns) is still live.
+Status (2026-11-01): slice 1 shipped — `migrations/0007_storage_v2.sql`
+(`documents_v2`/`doc_keys`/six projection tables/`flavors_v2`, v1 stays
+live until cutover), `POST /admin/ingest-v2/:flavor` (rows carry the
+lossless model JSON + dataset-provided keys; projections are rebuilt
+mechanically from `data` server-side, so a projection change needs no
+producer change), and the `src/lib/storage2.ts` loader
+(`getDocument`/`getDocumentByLookupKey`). Remaining: the Ruby/TS chunk
+producer from the datasets, re-ingest, v3 routes over the loader, then
+the v1 cutover.
 
 Goal: stop smushing. The document unit is the model's JSON; queries hit
 mechanical projections and dataset-provided keys. No lossy columns.
