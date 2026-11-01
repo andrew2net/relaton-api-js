@@ -3,11 +3,13 @@ import type { Context, Handler } from "hono";
 import type { AppEnv, Env } from "../env";
 import {
   getDocument,
+  getDocumentByLookupKey,
   pageSummaries,
   scalarText,
   searchDocumentPages,
   type StorageV2Doc,
 } from "../lib/storage2";
+import { normKey } from "pubid-ts/src/keys.ts";
 
 // The model-faithful GraphQL schema (TODO.api/04): it mirrors the Relaton
 // bibliographic model, reading the lossless `data` JSON from storage v2 —
@@ -280,7 +282,8 @@ interface DocumentsArgs {
 const resolvers = {
   Query: {
     document: async (_p: unknown, args: { key: string }, ctx: GqlContext) =>
-      getDocument(ctx.env.DB, args.key),
+      (await getDocument(ctx.env.DB, args.key))
+      ?? (await getDocumentByLookupKey(ctx.env.DB, normKey(args.key))),
 
     documents: async (_p: unknown, args: DocumentsArgs, ctx: GqlContext) => {
       const first = Math.min(Math.max(args.first ?? 20, 1), 100);

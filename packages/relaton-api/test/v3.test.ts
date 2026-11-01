@@ -112,6 +112,17 @@ describe("GET /v3/documents/{key}", () => {
     expect(await res.text()).toBe("");
   });
 
+  it("normalizes key spelling through the lookup tokens", async () => {
+    // The dataset's normKey token (uppercased, whitespace-stripped) backs
+    // the fallback, so case and spacing variants of a key resolve.
+    for (const spelling of ["ISO19115-1:2014", "iso%2019115-1:2014", "ISO%20%2019115-1:2014"]) {
+      const res = await SELF.fetch(`http://localhost/v3/documents/${spelling}`);
+      expect(res.status, spelling).toBe(200);
+      const body = await res.json<{ docidentifier: { content: string }[] }>();
+      expect(body.docidentifier[0]!.content).toBe("ISO 19115-1:2014");
+    }
+  });
+
   it("404s as problem+json for an unknown key", async () => {
     const res = await SELF.fetch("http://localhost/v3/documents/ISO%20NOTHING");
     expect(res.status).toBe(404);
