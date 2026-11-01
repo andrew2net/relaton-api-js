@@ -3,22 +3,27 @@
 Goal: third-party SDOs deploy by configuration only. The TS API is a
 library; deployments are 3-line entries plus `relaton-api.yaml`.
 
-## Done (rev 2)
+## Done (rev 3)
 
 - [x] `packages/relaton-api`: `createRelatonApi(config)` factory — the Hono
       app (REST + GraphQL + admin + landing) as a pure function of config.
 - [x] Worker entry reduced to config + factory call; config sourced from
       the `API_CONFIG` var (JSON), validated with zod.
 - [x] CLI skeleton: `relaton-api init` (scaffolds relaton-api.yaml, worker
-      entry, wrangler.jsonc), `relaton-api check` (validates config and
+      entry, D1 migrations), `relaton-api check` (validates config and
       index URLs).
+- [x] `relaton-api deploy`: generates `worker/wrangler.jsonc` from the
+      config (bindings, vars, custom-domain route, env:-resolved
+      account id; `--dry-run` previews), applies the D1 migrations, and
+      runs `wrangler deploy`.
+- [x] `relaton-api ingest <flavor>`: mirrors the flavor's Pages machine
+      index (manifest + shards, byte-for-byte, 64 files per request)
+      into the API — pure TS; `--chunks DIR` posts the prebuilt ingest
+      chunks the generated Ruby workflow produces and reconciles ghost
+      rows afterwards.
 
 ## Remaining
 
-- [ ] `relaton-api deploy`: generate bindings/routes from config, run D1
-      migrations, `wrangler deploy` programmatically.
-- [ ] `relaton-api ingest <flavor>`: import a #109 index into D1 (pure TS;
-      XML blob generation opts into the generated Ruby workflow).
 - [ ] Publish via GitHub trusted publishing; deployment repos pin versions.
 - [ ] Dogfood: second instance from pure config on workers.dev, zero code
       edits.
