@@ -91,7 +91,7 @@ describe("produceV2Chunks", () => {
     expect(chunks[0]!.final).toBe(true);
   });
 
-  it("falls back to index-v2.yaml when the manifest publishes no shards", async () => {
+  it("reads the monolith the manifest names when the corpus is below the sharding threshold", async () => {
     const opts = options({ chunkSize: 10 });
     const indexYaml = [
       "- :id:",
@@ -103,7 +103,7 @@ describe("produceV2Chunks", () => {
     ].join("\n");
     opts.fetchImpl = (async (input: string | URL) => {
       const url = String(input);
-      if (url.endsWith("manifest.json")) return new Response(JSON.stringify({ version: 2, shards: 0, count: 2 }));
+      if (url.endsWith("manifest.json")) return new Response(JSON.stringify({ version: 2, shards: 0, index: "index-v2", count: 2 }));
       if (url.endsWith("index-v2.yaml")) return new Response(indexYaml);
       const file = url.split("/").pop()!;
       if (file === "cc-1.yaml") return new Response(YAML_DOC("CC 1"));
