@@ -51,6 +51,28 @@ function arrayify<T>(value: T | T[] | undefined): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
+// Datasets carry nested-content shapes (`content: { content: ... }`) and
+// plain strings interchangeably; every projection column is TEXT, so each
+// extractor reads through to the scalar and answers null for anything
+// else. The lossless JSON stays authoritative in documents_v2.
+export function scalarText(entry: unknown): string | null {
+  if (typeof entry === "string") return entry;
+  if (typeof entry === "number" || typeof entry === "boolean") return String(entry);
+  if (entry && typeof entry === "object") {
+    const content = (entry as { content?: unknown }).content;
+    if (content !== undefined) return scalarText(content);
+    const value = (entry as { value?: unknown }).value;
+    if (typeof value === "string") return value;
+    // Role entries carry their value under `type` ({ type: "publisher" }).
+    const type = (entry as { type?: unknown }).type;
+    if (type !== undefined && type !== null) {
+      const text = scalarText(type);
+      if (text !== null) return text;
+    }
+  }
+  return null;
+}
+
 function titleText(t: TitleEntry): string {
   if (typeof t.content === "string") return t.content;
   if (typeof t.content === "object" && t.content !== null && typeof t.content.content === "string") {
@@ -63,19 +85,19 @@ export function projectTitles(data: Record<string, unknown>): { lang: string | n
   const raw = data.title;
   const entries: TitleEntry[] = typeof raw === "string" ? [{ content: raw }] : arrayify(raw as TitleEntry | TitleEntry[]);
   return entries
-    .map((t) => ({ lang: arrayify(t.language)[0] ?? null, type: t.type ?? null, text: titleText(t) }))
-    .filter((t) => t.text !== "");
+    .map((t) => ({ lang: scalarText(arrayify(t.language)[0]), type: scalarText(t.type), text: titleText(t) }))
+    .filter((t): t is { lang: string | null; type: string | null; text: string } => t.text !== "");
 }
 
 export function projectIdentifiers(data: Record<string, unknown>): { raw: string; type: string | null; isPrimary: number }[] {
   return arrayify(data.docidentifier as DocidentifierEntry | DocidentifierEntry[])
-    .filter((d) => typeof d.content === "string")
-    .map((d) => ({ raw: d.content!, type: d.type ?? null, isPrimary: d.primary === true ? 1 : 0 }));
+    .map((d) => ({ raw: scalarText(d.content), type: scalarText(d.type), isPrimary: d.primary === true ? 1 : 0 }))
+    .filter((d): d is { raw: string; type: string | null; isPrimary: number } => d.raw !== null);
 }
 
 export function projectDates(data: Record<string, unknown>): { type: string | null; onDate: string | null }[] {
   return arrayify(data.date as DateEntry | DateEntry[])
-    .map((d) => ({ type: d.type ?? null, onDate: d.on ?? d.from ?? d.to ?? null }));
+    .map((d) => ({ type: scalarText(d.type), onDate: scalarText(d.on) ?? scalarText(d.from) ?? scalarText(d.to) }));
 }
 
 export function projectContributors(data: Record<string, unknown>): { role: string | null; name: string | null; orgAbbrev: string | null }[] {
@@ -83,11 +105,10 @@ export function projectContributors(data: Record<string, unknown>): { role: stri
     .map((c) => {
       const roles = arrayify(c.role as unknown as ({ type?: string } | string)[]);
       const first = roles[0];
-      const role = typeof first === "string" ? first : (first as { type?: string } | undefined)?.type ?? null;
       return {
-        role,
-        name: c.organization?.name ?? c.person?.name?.completename ?? null,
-        orgAbbrev: c.organization?.abbreviation ?? null,
+        role: scalarText(first),
+        name: scalarText(c.organization?.name) ?? scalarText(c.person?.name?.completename),
+        orgAbbrev: scalarText(c.organization?.abbreviation),
       };
     });
 }
@@ -95,15 +116,15 @@ export function projectContributors(data: Record<string, unknown>): { role: stri
 export function projectRelations(data: Record<string, unknown>): { type: string | null; target: string | null }[] {
   return arrayify(data.relation as RelationEntry | RelationEntry[])
     .map((r) => ({
-      type: r.type ?? null,
-      target: r.bibitem?.docidentifier?.[0]?.content ?? r.bibitem?.id ?? null,
+      type: scalarText(r.type),
+      target: scalarText(r.bibitem?.docidentifier?.[0]?.content) ?? scalarText((r.bibitem as { id?: unknown } | undefined)?.id),
     }));
 }
 
 export function projectClassifications(data: Record<string, unknown>): { type: string | null; value: string }[] {
   return arrayify(data.classification as ClassificationEntry | ClassificationEntry[])
-    .filter((c) => typeof c.value === "string")
-    .map((c) => ({ type: c.type ?? null, value: c.value! }));
+    .map((c) => ({ type: scalarText(c.type), value: scalarText(c.value) }))
+    .filter((c): c is { type: string | null; value: string } => c.value !== null);
 }
 
 export async function getDocument(db: D1Database, key: string): Promise<StorageV2Doc | null> {
