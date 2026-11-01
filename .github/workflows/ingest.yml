@@ -29,6 +29,10 @@ on:
         description: "Space-separated flavors to also ingest into storage v2 (documents_v2)"
         required: false
         default: ""
+      v2_from_chunk:
+        description: "Resume the v2 legs after this many chunks (chunk count to drain before posting)"
+        required: false
+        default: ""
   # relaton-data-* repos dispatch this on push (client_payload.flavor), so
   # dataset updates reach the API on their slice immediately instead of
   # waiting for the weekly sweep.
@@ -154,9 +158,11 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
           LIMIT: ${{ inputs.limit }}
+          FROM_CHUNK: ${{ inputs.v2_from_chunk }}
         run: |
           args=""
           [ -n "$LIMIT" ] && args="$args --limit $LIMIT"
+          [ -n "$FROM_CHUNK" ] && args="$args --from-chunk $FROM_CHUNK"
           node packages/relaton-api/bin/relaton-api.mjs ingest ${{ matrix.flavor }} \
             --v2 --base https://api.relaton.org --token-env ADMIN_TOKEN $args
 
