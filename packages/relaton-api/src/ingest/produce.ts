@@ -67,6 +67,11 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
   }
   log(`${shardRows.length} index rows`);
 
+  // Some datasets map several keys to one file (IANA sub-registries live
+  // inside the registry document); the first key wins the document, the
+  // rest skip until those data repos split their files.
+  const seenFiles = new Set<string>();
+
   let chunk: V2Chunk | null = null;
   let index = 0;
   let completed = true;
@@ -96,6 +101,11 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
       if (remaining <= 0) break;
       remaining -= 1;
       const { row, data } = outcome.value;
+      if (seenFiles.has(row.file)) {
+        log(`skipped duplicate file: ${row.file} (${row.r})`);
+        continue;
+      }
+      seenFiles.add(row.file);
       if (!chunk || chunk.rows.length >= chunkSize) {
         if (chunk && !dropForResume()) yield chunk;
         chunk = { flavor: opts.flavor, repo: `relaton/relaton-data-${opts.flavor}`, rows: [], blobs: {} };

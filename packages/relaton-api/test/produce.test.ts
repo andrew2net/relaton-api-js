@@ -91,6 +91,23 @@ describe("produceV2Chunks", () => {
     expect(chunks[0]!.final).toBe(true);
   });
 
+  it("skips a second index row that shares a file, keeping the first key", async () => {
+    const opts = options({ chunkSize: 10 });
+    opts.fetchImpl = stubFetch(
+      {
+        "shard-00000.json": [
+          { r: "IANA foo", file: "data/foo.yaml" },
+          { r: "IANA foo/foo-1", file: "data/foo.yaml" },
+        ],
+      },
+      { "data/foo.yaml": YAML_DOC("IANA foo") },
+    );
+    const chunks = await collect(opts);
+    expect(chunks[0]!.rows).toHaveLength(1);
+    expect(chunks[0]!.rows[0]!.key).toBe("IANA foo");
+    expect(chunks[0]!.final).toBe(true);
+  });
+
   it("does not stamp final when maxRows truncates the wave", async () => {
     const chunks = await collect(options({ chunkSize: 1, maxRows: 1 }));
     expect(chunks).toHaveLength(1);
