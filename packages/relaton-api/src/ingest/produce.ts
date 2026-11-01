@@ -69,7 +69,10 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
       .catch(() => `https://raw.githubusercontent.com/relaton/relaton-data-${opts.flavor}/main`);
   const repo = trimSlash(repoBase);
   const chunkSize = opts.chunkSize ?? 100;
-  const concurrency = opts.concurrency ?? 20;
+  // 40 parallel dataset fetches keeps a 175k-row walk inside the 6-hour
+  // runner cap; the machine index can regenerate between runs, so a walk
+  // must fit one run rather than rely on from_chunk resume.
+  const concurrency = opts.concurrency ?? 40;
   const log = opts.onProgress ?? (() => {});
   let fromChunk = opts.fromChunk ?? 0;
   let remaining = opts.maxRows ?? Infinity;
