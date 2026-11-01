@@ -1,7 +1,15 @@
 # 10 — Observability and operations
 
-Status (2026-10-28): not started — no Analytics Engine, rate-limit binding,
-or runbook is in the worker.
+Status (2026-11-01): shipped in-repo — the `AE` Analytics Engine binding
+(dataset `relaton_api_requests`, per-response datapoint: route label
+index; method/key/flavor blobs; status+ms doubles), structured JSON logs
+(`r2_miss` is the alert event, `route_unmatched` covers surface gaps),
+the optional `RATE_LIMITER` binding guard on public write endpoints
+(documented wrangler snippet to enable), and the README runbook
+(rollback, re-ingest, ADMIN_TOKEN rotation, D1 export) + status section
+(/v3/flavors as the public health signal). Ops-side activation — the
+dashboard link, a cron'd D1 export workflow, and enabling the
+rate-limit binding on the account — is the deployment repo's call.
 
 Goal: production visibility and boring, documented ops.
 

@@ -15,6 +15,7 @@ import { renderSearchPage } from "./routes/search";
 import { renderVerifyPage } from "./routes/verify";
 import { renderAiPage } from "./routes/ai";
 import { handleMcp } from "./routes/mcp";
+import { logEvent, recordRequest } from "./lib/obs";
 
 const LLMS_TXT = `# Relaton API — bibliographic data for standards documents
 
@@ -81,6 +82,32 @@ export function createApp(configInput: unknown = {}) {
     allowHeaders: ["Content-Type"],
   }));
 
+  // Per-request observation (TODO.api/10): one Analytics Engine datapoint
+  // per served response, written outside the response path.
+  app.use("*", async (c, next) => {
+    const started = Date.now();
+    await next();
+    try {
+      c.executionCtx.waitUntil(Promise.resolve().then(() =>
+        recordRequest(c.env as never, {
+          route: routeLabel(c.req.path),
+          method: c.req.method,
+          status: c.res.status,
+          ms: Date.now() - started,
+          flavor: c.req.query("flavor") ?? null,
+          key: c.req.query("code") ?? c.req.query("key") ?? null,
+        }),
+      ));
+    } catch {
+      // No execution context (tests) — observation is best-effort.
+    }
+  });
+
+  // Public write endpoints sit behind the optional rate-limit binding —
+  // reads stay unlimited (pure GETs over D1/R2). Absent binding = off.
+  app.use("/mcp", rateLimitGuard);
+  app.use("/create/preview", rateLimitGuard);
+
   app.get("/", async (c) =>
     c.html(await renderHome(c.env.DB, c.env.API_VERSION ?? "dev", config.name), 200, {
       "cache-control": "public, max-age=300, stale-while-revalidate=86400",
@@ -133,7 +160,12 @@ export function createApp(configInput: unknown = {}) {
   app.route("/", adminRoutes);
   app.all(config.paths.graphql, graphqlRoute());
 
-  app.notFound((c) => c.text("Resource doesn't exist.", 404));
+  app.notFound((c) => {
+    // Logged so gaps in the surface show up in the logs, not just as
+    // 404s in the analytics.
+    logEvent("route_unmatched", { path: c.req.path, method: c.req.method });
+    return c.text("Resource doesn't exist.", 404);
+  });
 
   // Surface the actual error so debugging doesn't require tail.
   app.onError((err, c) => {
@@ -142,4 +174,22 @@ export function createApp(configInput: unknown = {}) {
   });
 
   return app;
+}
+
+// Collapse key-shaped segments so the analytics index stays
+// low-cardinality.
+function routeLabel(path: string): string {
+  return path
+    .replace(/\/v3\/documents\/.+/, "/v3/documents/:key")
+    .replace(/\/collections\/[^/]+\/entries\/.+/, "/collections/:flavor/entries/:key")
+    .replace(/^\/([a-z0-9-]+)\/documents\/.+/, "/:flavor/documents/:key");
+}
+
+async function rateLimitGuard(c: import("hono").Context<AppEnv>, next: () => Promise<void>) {
+  const limiter = (c.env as unknown as { RATE_LIMITER?: { limit(key: { key: string }): Promise<{ success: boolean }> } }).RATE_LIMITER;
+  if (!limiter) return next();
+  const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+  const { success } = await limiter.limit({ key: ip });
+  if (!success) return c.text("Too many requests.", 429, { "retry-after": "10" });
+  return next();
 }

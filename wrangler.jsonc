@@ -17,6 +17,12 @@
       "database_id": "c7c620c7-b102-4f85-9a8c-66c0fd3db246"
     }
   ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "AE",
+      "dataset": "relaton_api_requests"
+    }
+  ],
   "r2_buckets": [
     {
       "binding": "BUCKET",

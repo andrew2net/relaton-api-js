@@ -3,6 +3,7 @@ import type { AppEnv } from "../env";
 import { normalizeCode } from "pubid-ts";
 import { findDocument } from "../lib/lookup";
 import { searchDocuments } from "../lib/search";
+import { logEvent } from "../lib/obs";
 
 const QuerySchema = z.object({
   code: z.string().min(1).openapi({ example: "ISO 19115-1" }),
@@ -115,7 +116,7 @@ restRoutes.openapi(documentRoute, async (c) => {
 
   const obj = await c.env.BUCKET.get(row.r2_key);
   if (!obj) {
-    console.error(`R2 miss for ${row.r2_key} (flavor=${row.flavor}, docid=${row.docid})`);
+    logEvent("r2_miss", { r2_key: row.r2_key, flavor: row.flavor, docid: row.docid });
     return c.text("Document not found.", 404);
   }
 
