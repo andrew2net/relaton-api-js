@@ -91,6 +91,33 @@ describe("produceV2Chunks", () => {
     expect(chunks[0]!.final).toBe(true);
   });
 
+  it("falls back to index-v2.yaml when the manifest publishes no shards", async () => {
+    const opts = options({ chunkSize: 10 });
+    const indexYaml = [
+      "- :id:",
+      "    _type: pubid:calconnect:standard",
+      "  :file: data/cc-1.yaml",
+      "- :id:",
+      "    _type: pubid:calconnect:standard",
+      "  :file: data/cc-2.yaml",
+    ].join("\n");
+    opts.fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("manifest.json")) return new Response(JSON.stringify({ version: 2, shards: 0, count: 2 }));
+      if (url.endsWith("index-v2.yaml")) return new Response(indexYaml);
+      const file = url.split("/").pop()!;
+      if (file === "cc-1.yaml") return new Response(YAML_DOC("CC 1"));
+      if (file === "cc-2.yaml") return new Response(YAML_DOC("CC 2"));
+      return new Response("no", { status: 404 });
+    }) as typeof fetch;
+
+    const chunks = await collect(opts);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.rows.map((r) => r.key)).toEqual(["CC 1", "CC 2"]);
+    expect(chunks[0]!.rows[0]!.keys).toEqual(["CC1"]);
+    expect(chunks[0]!.final).toBe(true);
+  });
+
   it("skips a second index row that shares a file, keeping the first key", async () => {
     const opts = options({ chunkSize: 10 });
     opts.fetchImpl = stubFetch(

@@ -35,6 +35,17 @@ function trimSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
+// The document's own primary docidentifier — the key source when the
+// index row carries no reference string (the shards: 0 fallback).
+function keyFromDoc(data: Record<string, unknown>): string {
+  const raw = data.docidentifier ?? data.docid;
+  const first = Array.isArray(raw) ? raw[0] : raw;
+  if (!first || typeof first !== "object") return "";
+  const entry = first as { content?: unknown; id?: unknown };
+  const text = typeof entry.content === "string" ? entry.content : typeof entry.id === "string" ? entry.id : "";
+  return text.trim();
+}
+
 async function pull(fetchImpl: typeof fetch, url: string): Promise<Response> {
   const res = await fetchImpl(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
@@ -52,20 +63,31 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
   let remaining = opts.maxRows ?? Infinity;
 
   const manifest = await pull(fetchImpl, `${pages}/index/manifest.json`).then((r) => r.json() as Promise<{ shards: number }>);
-  if (!Number.isInteger(manifest.shards) || manifest.shards <= 0) throw new Error("manifest has no shard count");
+  if (!Number.isInteger(manifest.shards) || manifest.shards < 0) throw new Error("manifest has no shard count");
   log(`manifest ok, shards=${manifest.shards}`);
 
   const shardRows: { r: string; file: string }[] = [];
-  const PROBE = 24;
-  for (let i = 0; i < manifest.shards; i += PROBE) {
-    const names: string[] = [];
-    for (let s = i; s < Math.min(i + PROBE, manifest.shards); s++) names.push(`shard-${String(s).padStart(5, "0")}.json`);
-    const bodies = await Promise.all(
-      names.map((n) => fetchImpl(`${pages}/index/${n}`).then((r) => (r.ok ? (r.json() as Promise<{ r: string; file: string }[]>) : null))),
-    );
-    for (const rows of bodies) if (rows) shardRows.push(...rows);
+  if (manifest.shards > 0) {
+    const PROBE = 24;
+    for (let i = 0; i < manifest.shards; i += PROBE) {
+      const names: string[] = [];
+      for (let s = i; s < Math.min(i + PROBE, manifest.shards); s++) names.push(`shard-${String(s).padStart(5, "0")}.json`);
+      const bodies = await Promise.all(
+        names.map((n) => fetchImpl(`${pages}/index/${n}`).then((r) => (r.ok ? (r.json() as Promise<{ r: string; file: string }[]>) : null))),
+      );
+      for (const rows of bodies) if (rows) shardRows.push(...rows);
+    }
+  } else {
+    // Small indexes hit a generator bug (shards: 0 with rows present); the
+    // committed index-v2.yaml still carries the rows. Those rows name only
+    // the file — the key comes from each document's own primary
+    // docidentifier once loaded.
+    const yaml = await pull(fetchImpl, `${pages}/index-v2.yaml`).then((r) => r.text());
+    for (const row of (loadYaml(yaml) as { ":file"?: string }[] | null) ?? []) {
+      if (row[":file"]) shardRows.push({ r: "", file: row[":file"] });
+    }
   }
-  log(`${shardRows.length} index rows`);
+  log(`${shardRows.length} index rows${manifest.shards === 0 ? " (from index-v2.yaml — manifest publishes no shards)" : ""}`);
 
   // Some datasets map several keys to one file (IANA sub-registries live
   // inside the registry document); the first key wins the document, the
@@ -106,11 +128,16 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
         continue;
       }
       seenFiles.add(row.file);
+      const key = row.r || keyFromDoc(data);
+      if (!key) {
+        log(`skipped: no key derivable for ${row.file}`);
+        continue;
+      }
       if (!chunk || chunk.rows.length >= chunkSize) {
         if (chunk && !dropForResume()) yield chunk;
         chunk = { flavor: opts.flavor, repo: `relaton/relaton-data-${opts.flavor}`, rows: [], blobs: {} };
       }
-      chunk.rows.push({ key: row.r, file: row.file, data, keys: [normKey(row.r)] });
+      chunk.rows.push({ key, file: row.file, data, keys: [normKey(key)] });
     }
     if (remaining <= 0) {
       completed = false;
