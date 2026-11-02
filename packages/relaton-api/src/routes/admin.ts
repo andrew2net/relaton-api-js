@@ -400,49 +400,89 @@ adminRoutes.post("/admin/ingest-v2/:flavor", async (c) => {
   if (chunk.flavor !== flavor) return c.text("Flavor mismatch.", 400);
 
   const ingestedAt = new Date().toISOString();
-  const stmts: D1PreparedStatement[] = [];
-  for (const row of chunk.rows) {
-    stmts.push(
-      c.env.DB.prepare(
-        `INSERT INTO documents_v2 (key, flavor, file, data, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT (key) DO UPDATE SET
-           flavor = excluded.flavor, file = excluded.file, data = excluded.data,
-           indexed_at = excluded.indexed_at`,
-      ).bind(row.key, flavor, row.file, JSON.stringify(row.data), ingestedAt),
-    );
-    stmts.push(c.env.DB.prepare("DELETE FROM doc_keys WHERE document = ?1").bind(row.key));
-    for (const k of row.keys) {
-      stmts.push(
-        c.env.DB.prepare("INSERT INTO doc_keys (key, document) VALUES (?1, ?2) ON CONFLICT DO NOTHING")
-          .bind(k, row.key),
+
+  // The ingest writes batched: one multi-row upsert per ~90 binds, one
+  // chunk-wide projection delete, one multi-row insert per projection —
+  // ~50 statements for a 100-row chunk instead of ~2,500 per-row ones, so
+  // a heavy flavor's walk fits the runner cap instead of D1 round-trips.
+  const BIND_CAP = 90;
+
+  function insertStatements(table: string, columns: string[], tuples: unknown[][]): D1PreparedStatement[] {
+    if (!tuples.length) return [];
+    const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
+    const rowSql = `(${columns.map(() => "?").join(", ")})`;
+    const out: D1PreparedStatement[] = [];
+    for (let i = 0; i < tuples.length; i += perStmt) {
+      const group = tuples.slice(i, i + perStmt);
+      out.push(
+        c.env.DB.prepare(
+          `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${group.map(() => rowSql).join(", ")}`,
+        ).bind(...group.flat()),
       );
     }
+    return out;
+  }
 
-    const projections: [string, () => D1PreparedStatement[]][] = [
-      ["titles", () => projectTitles(row.data).map((t) =>
-        c.env.DB.prepare("INSERT INTO titles (document, lang, type, text) VALUES (?1, ?2, ?3, ?4)")
-          .bind(row.key, t.lang, t.type, t.text))],
-      ["identifiers", () => projectIdentifiers(row.data).map((i) =>
-        c.env.DB.prepare("INSERT INTO identifiers (document, raw, type, is_primary) VALUES (?1, ?2, ?3, ?4)")
-          .bind(row.key, i.raw, i.type, i.isPrimary))],
-      ["dates", () => projectDates(row.data).map((d) =>
-        c.env.DB.prepare("INSERT INTO dates (document, type, on_date) VALUES (?1, ?2, ?3)")
-          .bind(row.key, d.type, d.onDate))],
-      ["contributors", () => projectContributors(row.data).map((p) =>
-        c.env.DB.prepare("INSERT INTO contributors (document, role, name, org_abbrev) VALUES (?1, ?2, ?3, ?4)")
-          .bind(row.key, p.role, p.name, p.orgAbbrev))],
-      ["relations", () => projectRelations(row.data).map((r) =>
-        c.env.DB.prepare("INSERT INTO relations (document, type, target) VALUES (?1, ?2, ?3)")
-          .bind(row.key, r.type, r.target))],
-      ["classifications", () => projectClassifications(row.data).map((cl) =>
-        c.env.DB.prepare("INSERT INTO classifications (document, type, value) VALUES (?1, ?2, ?3)")
-          .bind(row.key, cl.type, cl.value))],
-    ];
-    for (const [table, build] of projections) {
-      stmts.push(c.env.DB.prepare(`DELETE FROM ${table} WHERE document = ?1`).bind(row.key));
-      stmts.push(...build());
+  function deleteByDocuments(table: string, keys: string[]): D1PreparedStatement[] {
+    const out: D1PreparedStatement[] = [];
+    for (let i = 0; i < keys.length; i += BIND_CAP) {
+      const group = keys.slice(i, i + BIND_CAP);
+      out.push(
+        c.env.DB.prepare(`DELETE FROM ${table} WHERE document IN (${group.map((_, j) => `?${j + 1}`).join(", ")})`)
+          .bind(...group),
+      );
     }
+    return out;
+  }
+
+  const chunkKeys = chunk.rows.map((r) => r.key);
+  const stmts: D1PreparedStatement[] = [];
+
+  // Multi-row upsert: SQLite applies VALUES rows sequentially, so a key
+  // repeated within one statement (the producer dedupes, but be safe)
+  // updates cleanly.
+  {
+    const columns = ["key", "flavor", "file", "data", "indexed_at"];
+    const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
+    const rowSql = `(${columns.map(() => "?").join(", ")})`;
+    for (let i = 0; i < chunk.rows.length; i += perStmt) {
+      const group = chunk.rows.slice(i, i + perStmt);
+      stmts.push(
+        c.env.DB.prepare(
+          `INSERT INTO documents_v2 (key, flavor, file, data, indexed_at)
+           VALUES ${group.map(() => rowSql).join(", ")}
+           ON CONFLICT (key) DO UPDATE SET
+             flavor = excluded.flavor, file = excluded.file, data = excluded.data,
+             indexed_at = excluded.indexed_at`,
+        ).bind(...group.flatMap((r) => [r.key, flavor, r.file, JSON.stringify(r.data), ingestedAt])),
+      );
+    }
+  }
+
+  stmts.push(...deleteByDocuments("doc_keys", chunkKeys));
+  stmts.push(...insertStatements(
+    "doc_keys",
+    ["key", "document"],
+    chunk.rows.flatMap((r) => r.keys.map((k) => [k, r.key])),
+  ));
+
+  const projected: [string, string[], unknown[][]][] = [
+    ["titles", ["document", "lang", "type", "text"],
+      chunk.rows.flatMap((r) => projectTitles(r.data).map((t) => [r.key, t.lang, t.type, t.text]))],
+    ["identifiers", ["document", "raw", "type", "is_primary"],
+      chunk.rows.flatMap((r) => projectIdentifiers(r.data).map((i) => [r.key, i.raw, i.type, i.isPrimary]))],
+    ["dates", ["document", "type", "on_date"],
+      chunk.rows.flatMap((r) => projectDates(r.data).map((d) => [r.key, d.type, d.onDate]))],
+    ["contributors", ["document", "role", "name", "org_abbrev"],
+      chunk.rows.flatMap((r) => projectContributors(r.data).map((p) => [r.key, p.role, p.name, p.orgAbbrev]))],
+    ["relations", ["document", "type", "target"],
+      chunk.rows.flatMap((r) => projectRelations(r.data).map((r2) => [r.key, r2.type, r2.target]))],
+    ["classifications", ["document", "type", "value"],
+      chunk.rows.flatMap((r) => projectClassifications(r.data).map((cl) => [r.key, cl.type, cl.value]))],
+  ];
+  for (const [table, columns, tuples] of projected) {
+    stmts.push(...deleteByDocuments(table, chunkKeys));
+    stmts.push(...insertStatements(table, columns, tuples));
   }
 
   if (chunk.final) {
