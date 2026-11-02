@@ -9,9 +9,11 @@ with Link headers; flavor/year/doctype/status/q filters; 422
 problem+json on a bad cursor), `/v3/flavors` and `/v3/version` from
 storage v2, RFC 9457 problem+json errors throughout, XML streamed from
 the R2 blobs (406 when none stored). OpenAPI 3.1 descriptions ride the
-zod-openapi routes. Remaining: `/api/v1/*` removal (the cutover, after
-the storage v2 re-ingest), edge-cache purge on re-ingest, and the same
-surface on the Ruby reference stack.
+zod-openapi routes. The cutover landed 2026-11-02: `/api/v1/*` removed from BOTH stacks
+(relaton-api-js#117, relaton-api-ruby#9) and the contract moved to
+v2.0.0 — twelve fixtures, all v3, each verified live. Remaining:
+edge-cache purge on re-ingest; the Worker's /search and /collections
+pages still read the v1 tables (the storage unification pass).
 
 Goal: replace `/api/v1/*` entirely. RFC 9457 errors, content negotiation,
 edge caching, cursor pagination, navigable relations.
