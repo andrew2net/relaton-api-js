@@ -555,7 +555,7 @@ ${metaLogo ? `<meta property="og:image" content="${metaLogo}">` : ""}
   const pageBody = `
 <p class="meta">${escapeHtml(collection)} collection ·
 <a href="${entryPath}?raw=1">raw bytes</a> ·
-<a href="/api/v1/document?code=${encodeURIComponent(docid)}" title="/api/v1/document?code=${encodeURIComponent(docid)}">API</a> ·
+<a href="/v3/documents/${encodeURIComponent(docid)}" title="/v3/documents/${encodeURIComponent(docid)}">API</a> ·
 <a href="/collections/${escapeHtml(collection)}">all ${escapeHtml(collection)} records</a></p>
 ${record ? renderRecordHead(record, familyQueryOf(record, key), collection) : ""}
 <div class="record-body">

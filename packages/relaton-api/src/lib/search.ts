@@ -1,6 +1,6 @@
 import { fuseRankings } from "./semantic";
 
-// Shared search engine for /search, /collections/{c}, and /api/v1/search:
+// Shared search engine for /search and /collections/{c}:
 // one WHERE-builder over the documents index with pubid-aware matching,
 // filters, sorting, pagination, and per-dimension facet counts.
 

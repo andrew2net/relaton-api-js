@@ -79,9 +79,9 @@ ${codeBlock("system-prompt", SYSTEM_PROMPT)}
 <h2>Plain HTTP API</h2>
 <p>Assistants without MCP can use the REST endpoints directly —
 <a href="/docs">full OpenAPI reference</a>:</p>
-<pre><code>GET /api/v1/search?q=iso+19115&flavor=iso&sort=year_desc   # search with facets
-GET /api/v1/document?code=RFC+8446                        # record as Relaton XML
-GET /api/v1/verify?code=10.17487/RFC8446                 # live DOI/ISBN resolution
+<pre><code>GET /v3/documents?q=iso+19115&flavor=iso                 # key-ordered search
+GET /v3/documents/RFC%208446                             # record (Accept: json|relaton+xml|yaml)
+GET /verify?code=10.17487/RFC8446                        # live DOI/ISBN resolution (page)
 GET /collections/ietf/entries/data%2Frfc8446              # browsable record page</code></pre>
 <p>A machine-readable guide is published at <a href="/llms.txt">/llms.txt</a>.</p>
 

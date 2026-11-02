@@ -5,8 +5,8 @@ import { STATUS_WORDS } from "./ui/record";
 import { hybridSearch, type SearchParams, type SearchResult } from "../lib/search";
 
 // Global pubid/keyword search across every flavor, with facets, sorting,
-// and pagination. Server-rendered; API clients get the same engine at
-// /api/v1/search.
+// and pagination. Server-rendered; the API surface is the /v3/documents
+// collection (key-ordered, cursor-paged).
 
 const CSS = `
   .search-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 28px; align-items: start; }
