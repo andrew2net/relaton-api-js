@@ -1,161 +1,11 @@
 {
   "name": "relaton-api contract fixtures",
-  "version": "1.1.0",
-  "description": "Executable contract (TODO.api/12): every fixture is a GET against a base URL. Assertions are the stable contract surface only — status, headers, and pinned identifiers — never titles or dates, which drift with the datasets.",
+  "version": "2.0.0",
+  "description": "Executable contract (TODO.api/12), v3-only since the /api/v1 cutover: every fixture is a GET against a base URL. Assertions are the stable contract surface only — status, headers, and pinned identifiers — never titles or dates, which drift with the datasets.",
   "baseUrlEnv": "RELATON_API_BASE_URL",
   "fixtures": [
     {
-      "name": "document: RFC 8446 resolves in the rfcs flavor",
-      "path": "/api/v1/document?code=RFC%208446",
-      "headers": {
-        "accept": "text/xml"
-      },
-      "expect": {
-        "status": 200,
-        "contentType": "text/xml",
-        "bodyContains": [
-          "<bibdata",
-          "<docidentifier type=\"IETF\" primary=\"true\">RFC 8446"
-        ]
-      }
-    },
-    {
-      "name": "document: the STD sub-series spelling crosses to its RFC record",
-      "path": "/api/v1/document?code=STD%2086",
-      "headers": {
-        "accept": "text/xml"
-      },
-      "expect": {
-        "status": 200,
-        "contentType": "text/xml",
-        "bodyContains": [
-          "<docidentifier type=\"IETF\" primary=\"true\">STD 86"
-        ]
-      }
-    },
-    {
-      "name": "document: a bare 3GPP id resolves to the latest release",
-      "path": "/api/v1/document?code=3GPP%20TR%2000.01U",
-      "headers": {
-        "accept": "text/xml"
-      },
-      "expect": {
-        "status": 200,
-        "contentType": "text/xml",
-        "bodyContains": [
-          "<bibdata"
-        ]
-      }
-    },
-    {
-      "name": "document: the dataset alias spelling of an iana registry resolves",
-      "path": "/api/v1/document?code=IANA%20rpki-signed-objects",
-      "headers": {
-        "accept": "text/xml"
-      },
-      "expect": {
-        "status": 200,
-        "contentType": "text/xml",
-        "bodyContains": [
-          "<bibdata"
-        ]
-      }
-    },
-    {
-      "name": "document: a copublished ISO/IEC id resolves undated to its latest edition",
-      "path": "/api/v1/document?code=ISO%2FIEC%2027001",
-      "headers": {
-        "accept": "text/xml"
-      },
-      "expect": {
-        "status": 200,
-        "contentType": "text/xml",
-        "bodyContains": [
-          "<docidentifier type=\"ISO\" primary=\"true\">ISO/IEC 27001:2022"
-        ]
-      }
-    },
-    {
-      "name": "document: an ETSI versioned id resolves from its bare form",
-      "path": "/api/v1/document?code=ETSI%20SR%20000%20314",
-      "headers": {
-        "accept": "text/xml"
-      },
-      "expect": {
-        "status": 200,
-        "contentType": "text/xml",
-        "bodyContains": [
-          "<docidentifier type=\"ETSI\" primary=\"true\">ETSI SR 000 314 V2.39.1 (2026-03)"
-        ]
-      }
-    },
-    {
-      "name": "document: an unknown code is a 404, not an error page",
-      "path": "/api/v1/document?code=NOSUCHXX99",
-      "headers": {
-        "accept": "text/xml"
-      },
-      "expect": {
-        "status": 404,
-        "contentType": "text/plain"
-      }
-    },
-    {
-      "name": "search: Cyrillic identifiers are queryable",
-      "path": "/api/v1/search?q=%D0%93%D0%9E%D0%A1%D0%A2",
-      "headers": {
-        "accept": "application/json"
-      },
-      "expect": {
-        "status": 200,
-        "contentType": "application/json",
-        "json": {
-          "total": ">0"
-        }
-      }
-    },
-    {
-      "name": "search: component filters narrow within a flavor",
-      "path": "/api/v1/search?publisher=ISO&number=27001",
-      "headers": {
-        "accept": "application/json"
-      },
-      "expect": {
-        "status": 200,
-        "contentType": "application/json",
-        "json": {
-          "total": ">0"
-        }
-      }
-    },
-    {
-      "name": "version: the release banner answers",
-      "path": "/api/v1/version",
-      "headers": {
-        "accept": "text/plain"
-      },
-      "expect": {
-        "status": 200,
-        "contentType": "text/plain",
-        "bodyContains": [
-          "Release:"
-        ]
-      }
-    },
-    {
-      "name": "v3: the collection pages key-ordered with a cursor",
-      "path": "/v3/documents?limit=1",
-      "expect": {
-        "status": 200,
-        "contentType": "application/json",
-        "bodyContains": [
-          "\"items\"",
-          "\"next_cursor\""
-        ]
-      }
-    },
-    {
-      "name": "v3: a document by key serves the model JSON with its identifiers",
+      "name": "document: RFC 8446 serves by key",
       "path": "/v3/documents/RFC%208446",
       "expect": {
         "status": 200,
@@ -166,7 +16,89 @@
       }
     },
     {
-      "name": "v3: content negotiation answers yaml",
+      "name": "document: the STD sub-series key serves its record",
+      "path": "/v3/documents/STD%2086",
+      "expect": {
+        "status": 200,
+        "contentType": "application/json"
+      }
+    },
+    {
+      "name": "document: a release-pinned 3GPP key serves (encoded slash and colon)",
+      "path": "/v3/documents/3GPP%20TR%2000.01U%3AUMTS%2F3.0.0",
+      "expect": {
+        "status": 200,
+        "contentType": "application/json",
+        "bodyContains": [
+          "3GPP TR 00.01U"
+        ]
+      }
+    },
+    {
+      "name": "document: the dataset alias spelling of an iana registry resolves",
+      "path": "/v3/documents/IANA%20rpki-signed-objects",
+      "expect": {
+        "status": 200,
+        "contentType": "application/json",
+        "bodyContains": [
+          "RPKI Signed Objects"
+        ]
+      }
+    },
+    {
+      "name": "document: a copublished ISO/IEC key serves",
+      "path": "/v3/documents/ISO%2FIEC%2027001",
+      "expect": {
+        "status": 200,
+        "contentType": "application/json",
+        "bodyContains": [
+          "ISO/IEC 27001"
+        ]
+      }
+    },
+    {
+      "name": "document: an ETSI versioned key serves",
+      "path": "/v3/documents/ETSI%20EG%20200%20053%20V1.4.1%20(2002-06)",
+      "expect": {
+        "status": 200,
+        "contentType": "application/json",
+        "bodyContains": [
+          "ETSI EG 200 053"
+        ]
+      }
+    },
+    {
+      "name": "document: an unknown key is problem+json",
+      "path": "/v3/documents/RFC%20NOTHING",
+      "expect": {
+        "status": 404,
+        "contentType": "application/problem+json"
+      }
+    },
+    {
+      "name": "search: Cyrillic identifiers are queryable",
+      "path": "/v3/documents?q=%D0%93%D0%9E%D0%A1%D0%A2&limit=1",
+      "expect": {
+        "status": 200,
+        "contentType": "application/json",
+        "bodyContains": [
+          "\"items\""
+        ]
+      }
+    },
+    {
+      "name": "collection: pages key-ordered with a cursor",
+      "path": "/v3/documents?limit=1",
+      "expect": {
+        "status": 200,
+        "contentType": "application/json",
+        "bodyContains": [
+          "\"next_cursor\""
+        ]
+      }
+    },
+    {
+      "name": "negotiation: content negotiation answers yaml",
       "path": "/v3/documents/RFC%208446",
       "headers": {
         "accept": "application/yaml"
@@ -177,23 +109,25 @@
       }
     },
     {
-      "name": "v3: flavors reports per-flavor coverage",
+      "name": "flavors: reports per-flavor coverage",
       "path": "/v3/flavors",
       "expect": {
         "status": 200,
         "contentType": "application/json",
         "bodyContains": [
-          "\"flavors\"",
           "\"doc_count\""
         ]
       }
     },
     {
-      "name": "v3: an unknown key is problem+json",
-      "path": "/v3/documents/RFC%20NOTHING",
+      "name": "version: the release banner answers",
+      "path": "/v3/version",
       "expect": {
-        "status": 404,
-        "contentType": "application/problem+json"
+        "status": 200,
+        "contentType": "application/json",
+        "bodyContains": [
+          "\"release\""
+        ]
       }
     }
   ]

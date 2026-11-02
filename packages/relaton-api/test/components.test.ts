@@ -1,8 +1,10 @@
 // Component search (migration 0005): pubid components of the primary
-// docidentifier are ingest-parsed into columns, and /api/v1/search filters on
-// them. Seeded per file — the workers pool isolates storage per test file.
+// docidentifier are ingest-parsed into columns, and the shared search
+// engine (the /search page's) filters on them. Seeded per file — the
+// workers pool isolates storage per test file.
 import { beforeAll, describe, expect, it } from "vitest";
-import { SELF, env } from "cloudflare:test";
+import { env } from "cloudflare:test";
+import { searchDocuments } from "../src/lib/search";
 import schemaSql from "../../../migrations/0001_init.sql?raw";
 import componentsSql from "../../../migrations/0005_document_components.sql?raw";
 
@@ -55,9 +57,15 @@ beforeAll(async () => {
 });
 
 async function search(query: string): Promise<{ total: number; items: { docid: string | null }[] }> {
-  const res = await SELF.fetch(`http://localhost/api/v1/search${query}`);
-  expect(res.status).toBe(200);
-  return res.json();
+  const p = new URLSearchParams(query);
+  const result = await searchDocuments(env.DB, {
+    publisher: p.get("publisher") ?? undefined,
+    number: p.get("number") ?? undefined,
+    part: p.get("part") ?? undefined,
+    edition: p.get("edition") ?? undefined,
+    size: Number(p.get("size") ?? 25),
+  });
+  return result;
 }
 
 describe("component search", () => {

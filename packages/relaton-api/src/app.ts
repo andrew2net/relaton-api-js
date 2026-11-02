@@ -3,7 +3,6 @@ import { cors } from "hono/cors";
 import { parseConfig, type RelatonApiConfig } from "./config";
 import type { AppEnv } from "./env";
 import { adminRoutes } from "./routes/admin";
-import { restRoutes } from "./routes/rest";
 import { v3Routes } from "./routes/v3";
 import { schemaRoutes } from "./routes/schema";
 import { cloudStoreRoutes } from "./routes/cloudstore";
@@ -25,11 +24,11 @@ records for standards (ISO, IEC, IETF/BCP/RFC, ITU, NIST, IEEE, W3C, 3GPP,
 IHO, OGC, …) with identifier parsing that matches the pubid gem.
 
 ## HTTP API (read-only, no auth)
-- GET /api/v1/document?code=RFC+8446 — one record as Relaton XML (params: code, year, all_parts, keep_year)
-- GET /api/v1/search?q=…&flavor=…&doctype=…&status=…&yearFrom=…&yearTo=…&sort=relevance|year_desc|year_asc|docid&page=0&size=25 — search with facet counts
-- GET /api/v1/verify?code=10.17487/RFC8446 — live DOI (CrossRef) / ISBN (OpenLibrary) resolution
+- GET /v3/documents/{key} — one record by key; Accept: application/json | application/relaton+xml | application/yaml
+- GET /v3/documents?q=…&flavor=…&doctype=…&status=…&year=…&cursor=…&limit=… — key-ordered search, Link-header paging
+- GET /verify?code=10.17487/RFC8446 — live DOI (CrossRef) / ISBN (OpenLibrary) resolution
 - GET /collections — browsable collections; /collections/{flavor}/entries/{key} — record pages
-- OpenAPI spec: /openapi.json — reference UI: /docs — GraphQL: /graphql
+- OpenAPI spec: /openapi.json — reference UI: /docs — GraphQL: /graphql — JSON Schemas: /schema
 
 ## MCP server
 - URL: https://api.relaton.org/mcp (Streamable HTTP, JSON-RPC 2.0, public, read-only)
@@ -154,7 +153,6 @@ export function createApp(configInput: unknown = {}) {
   });
 
 
-  app.route("/", restRoutes);
   app.route("/", v3Routes);
   app.route("/", schemaRoutes);
   app.route("/", machineIndexRoutes);

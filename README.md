@@ -9,8 +9,10 @@ can deploy its own instance of this API — see [Deploying your own](#deploying-
 | Endpoint | Purpose |
 |---|---|
 | `GET /` | Landing page with live coverage stats and a search demo |
-| `GET /api/v1/document?code=&year=&all_parts=&keep_year=` | Relaton XML bibdata — same contract as the Ruby API (relaton gem `use_api` clients and the relaton.org `<ApiDemo />` both call this) |
-| `GET /api/v1/version?format=text\|xml\|json` | API + data versions |
+| `GET /v3/documents/{key}` | One document by key — `Accept: application/json` (default) / `application/relaton+xml` / `application/yaml`; strong ETag + immutable caching, `If-None-Match` → 304, HEAD; unknown keys fall back through normalized tokens (case/spacing/hyphens) |
+| `GET /v3/documents?q=&flavor=&doctype=&status=&year=&cursor=&limit=` | Key-ordered search with cursor paging (`Link: rel="next"`, `next_cursor`); RFC 9457 problem+json errors |
+| `GET /v3/flavors`, `GET /v3/version` | Per-flavor coverage; release + model versions |
+| `GET /schema`, `GET /schema/relaton-{bib-item,ietf-item}.json` | The model JSON Schemas (draft 2020-12), served from the `relaton` npm package |
 | `GET /openapi.json`, `GET /docs` | OpenAPI 3.1 spec + Scalar UI |
 | `POST /graphql` | GraphQL across all flavors (`document`, `documents(code/flavor/title/year/doctype, first/after)`, `flavors`, `version`); GraphiQL playground at GET `/graphql` |
 | `GET /{flavor}/index/manifest.json`, `GET /{flavor}/index/shard-NNNNN.json` | The machine-index contract — the same bytes the relaton-data-* Pages sites publish, mirrored into R2 at ingest (`tools/sync_machine_index.sh`). A relaton `ShardSource` treats this host as just another index host: base-URL swap, ETag/`If-None-Match` revalidation, a missing shard is a definitive not-found (api-js#14) |
@@ -98,7 +100,7 @@ echo "<your admin token>" | npx wrangler secret put ADMIN_TOKEN
 npx wrangler deploy                    # live at https://<worker>.<subdomain>.workers.dev
 ```
 
-`API_VERSION` in `wrangler.jsonc` `vars` controls what `/api/v1/version` reports.
+`API_VERSION` in `wrangler.jsonc` `vars` controls what `/v3/version` reports.
 
 ### 3. Custom domain
 

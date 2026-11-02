@@ -104,12 +104,12 @@ export async function renderHome(db: D1Database, version: string, name = "Relato
       <p>Fill in a form and get Relaton YAML, XML, JSON, and AsciiBib to copy — the AsciiBib output pastes straight into Metanorma.</p>
     </div>
     <div class="card">
-      <a href="/api/v1/document?code=ISO%2019115-1">GET /api/v1/document</a>
-      <p>Fetch a document as Relaton XML. Parameters: <code>code</code> (required), <code>year</code>, <code>all_parts</code>, <code>keep_year</code>. Same contract the Relaton gem uses via <code>use_api</code>.</p>
+      <a href="/v3/documents/ISO%2019115-1:2014">GET /v3/documents/{key}</a>
+      <p>Fetch a document by key. <code>Accept: application/json</code> (default), <code>application/relaton+xml</code>, or <code>application/yaml</code>. Strong ETags, immutable caching.</p>
     </div>
     <div class="card">
-      <a href="/api/v1/version">GET /api/v1/version</a>
-      <p>API and data versions. <code>?format=xml|json</code> for machine-readable output.</p>
+      <a href="/v3/version">GET /v3/version</a>
+      <p>API and data versions as JSON.</p>
     </div>
     <div class="card">
       <a href="/docs">GET /docs</a>
@@ -117,7 +117,7 @@ export async function renderHome(db: D1Database, version: string, name = "Relato
     </div>
     <div class="card">
       <a href="/graphql">POST /graphql</a>
-      <p>Query across <em>all</em> flavors: <code>document(code)</code>, <code>documents(code, flavor, title, year, doctype, first, after)</code>, <code>flavors</code>. GraphiQL playground at this URL.</p>
+      <p>Query across <em>all</em> flavors: <code>document(key)</code>, <code>documents(title, flavor, year, doctype, status, contributor, relation, first, after)</code>, <code>flavors</code>. GraphiQL playground at this URL.</p>
     </div>
   </div>
 
@@ -130,16 +130,16 @@ export async function renderHome(db: D1Database, version: string, name = "Relato
   <pre id="result"><code id="result-code"></code></pre>
 
   <h2>Examples</h2>
-  <pre><code># Latest edition of a standard
-curl "https://api.relaton.org/api/v1/document?code=ISO%2019115-1"
+  <pre><code># One document by key, JSON by default
+curl "https://api.relaton.org/v3/documents/ISO%2019115-1:2014"
 
-# Specific year and scope wrapper (gem-style)
-curl "https://api.relaton.org/api/v1/document?code=ISO(ISO%2019115-1)&amp;year=2014"
+# Bibdata XML via content negotiation
+curl -H 'Accept: application/relaton+xml' "https://api.relaton.org/v3/documents/RFC%208446"
 
 # Search every flavor by title, via GraphQL
 curl -s https://api.relaton.org/graphql \\
   -H 'Content-Type: application/json' \\
-  -d '{"query":"{ documents(title: \\"risk management\\", first: 5) { edges { node { docid flavor year title } } } }"}'</code></pre>
+  -d '{"query":"{ documents(title: \\"risk management\\", first: 5) { edges { node { key docids { content } titles { content } } } } }"}'</code></pre>
 
   <h2>Coverage</h2>
   <div class="chips">${chips}</div>
@@ -155,7 +155,7 @@ curl -s https://api.relaton.org/graphql \\
     if (!code) return;
     status.textContent = 'Fetching…';
     try {
-      var res = await fetch('/api/v1/document?code=' + encodeURIComponent(code));
+      var res = await fetch('/v3/documents/' + encodeURIComponent(code), { headers: { Accept: 'application/relaton+xml' } });
       var text = await res.text();
       if (res.ok) {
         resultCode.textContent = formatXml(text);
