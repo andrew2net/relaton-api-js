@@ -221,7 +221,8 @@ export async function searchDocumentPages(
   if (opts.year) conditions.push(`EXISTS (SELECT 1 FROM dates t WHERE t.document = d.key AND t.on_date LIKE ${bind(`${opts.year}%`)})`);
   if (opts.doctype) conditions.push(`JSON_EXTRACT(d.data, '$.doctype') = ${bind(opts.doctype)}`);
   if (opts.status) conditions.push(`JSON_EXTRACT(d.data, '$.status.stage') = ${bind(opts.status)}`);
-  if (opts.q) conditions.push(`EXISTS (SELECT 1 FROM titles t WHERE t.document = d.key AND t.text LIKE ${bind(`%${opts.q}%`)})`);
+  if (opts.q) conditions.push(`(EXISTS (SELECT 1 FROM titles t WHERE t.document = d.key AND t.text LIKE ${bind(`%${opts.q}%`)})
+      OR EXISTS (SELECT 1 FROM identifiers i WHERE i.document = d.key AND i.raw LIKE ${bind(`%${opts.q}%`)}))`);
   if (opts.title) conditions.push(`EXISTS (SELECT 1 FROM titles t WHERE t.document = d.key AND t.text LIKE ${bind(`%${opts.title}%`)})`);
   if (opts.contributor) {
     conditions.push(

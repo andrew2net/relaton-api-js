@@ -156,6 +156,14 @@ describe("GET /v3/documents", () => {
     expect(body.items.map((i) => i.key)).toEqual(["ISO 19115-1:2014", "ISO 19115-1:2018"]);
   });
 
+  it("filters by identifier text, not just titles", async () => {
+    // "19115" appears in the seeded docidentifier but in no title — the q
+    // filter matches the identifiers projection too (v1 search parity).
+    const res = await SELF.fetch("http://localhost/v3/documents?q=19115");
+    const body = await res.json<{ items: { key: string }[] }>();
+    expect(body.items.map((i) => i.key)).toEqual(["ISO 19115-1:2014", "ISO 19115-1:2018"]);
+  });
+
   it("422s an invalid cursor as problem+json", async () => {
     const res = await SELF.fetch("http://localhost/v3/documents?cursor=%21%21not-base64%21%21");
     expect(res.status).toBe(422);
