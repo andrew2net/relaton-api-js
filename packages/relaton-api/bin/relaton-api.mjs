@@ -7,7 +7,7 @@
 //   ingest — mirror a flavor's Pages machine index into the API, or post
 //            prebuilt ingest chunks (from the Ruby workflow) into D1
 
-import { mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, cpSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, cpSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join, resolve } from "node:path";
@@ -100,7 +100,7 @@ async function ingest(...argv) {
     },
   });
   if (!flavor) {
-    console.error("usage: relaton-api ingest <flavor> [--v2] [--chunks DIR] [--pages URL] [--base URL] [--token-env NAME]");
+    console.error("usage: relaton-api ingest <flavor> [--v2] [--pages URL] [--base URL] [--token-env NAME]");
     process.exit(1);
   }
   // CI runs the CLI from a repo checkout with no relaton-api.yaml; the
@@ -109,48 +109,13 @@ async function ingest(...argv) {
   const base = apiBase(config, values.base);
   const token = adminToken(config, values["token-env"]);
 
-  if (values.chunks) {
-    const dir = values.chunks;
-    const names = readdirSync(dir).filter((f) => /^chunk-.*\.json$/.test(f)).sort();
-    if (!names.length) {
-      console.error(`no chunk-*.json files in ${dir}`);
-      process.exit(1);
-    }
-    const endpoint = values.v2 ? "ingest-v2" : "ingest";
-    const files = names.map((name) => ({ name, body: readFileSync(join(dir, name), "utf8") }));
-    return postChunks(flavor, files, `${base}/admin/${endpoint}`, token)
-      .then((before) => reconcile(flavor, base, values.v2, token, before));
-  }
   if (values.v2) return ingestV2(flavor, values, base, token);
   return ingestMachineIndex(flavor, values.pages, base, token);
 }
 
-// Post the chunk files (Ruby workflow output for v1, producer output for
-// v2), then reconcile: rows the wave never re-stamped are ghosts and get
-// deleted. Returns the wave start so reconcile can be issued separately.
-async function postChunks(flavor, files, url, token, { attempts = 4 } = {}) {
-  const before = new Date().toISOString();
-  const failed = [];
-  for (const { name, body } of files) {
-    process.stdout.write(`${name}: posting…`);
-    try {
-      const res = await postJson(url, token, body, attempts);
-      console.log(` ok (rows=${res.rows}, blobs=${res.blobs})`);
-    } catch (e) {
-      console.log(` FAILED: ${String(e).slice(0, 200)}`);
-      failed.push(name);
-    }
-  }
-  if (failed.length) {
-    console.error(`${flavor}: ${failed.length} chunk(s) failed: ${failed.join(", ")}`);
-    process.exit(1);
-  }
-  return before;
-}
-
-async function reconcile(flavor, base, v2, token, before) {
-  const endpoint = v2 ? "reconcile-v2" : "reconcile";
-  const res = await postJson(`${base}/admin/${endpoint}/${flavor}`, token, JSON.stringify({ before }));
+// Rows the wave never re-stamped are ghosts and get deleted (v2 store).
+async function reconcile(flavor, base, token, before) {
+  const res = await postJson(`${base}/admin/reconcile-v2/${flavor}`, token, JSON.stringify({ before }));
   console.log(`${flavor}: reconciled, deleted ${res.deleted} stale rows`);
 }
 
@@ -181,7 +146,7 @@ async function ingestV2(flavor, values, base, token) {
     console.error(`${flavor}: ingested 0 rows — the index rows and the dataset files disagree`);
     process.exit(1);
   }
-  await reconcile(flavor, base, true, token, before);
+  await reconcile(flavor, base, token, before);
 }
 
 // Mirror the Pages machine index byte-for-byte: manifest + every shard that
@@ -377,7 +342,7 @@ async function check() {
 
 const commands = { init: scaffold, check, deploy, ingest, "": usage };
 
-export const __cli = { apiBase, adminToken, loadConfig, postJson, postChunks, reconcile, ingestMachineIndex, ingestV2, resolveEnvValue };
+export const __cli = { apiBase, adminToken, loadConfig, postJson, reconcile, ingestMachineIndex, ingestV2, resolveEnvValue };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const fn = commands[command ?? ""];

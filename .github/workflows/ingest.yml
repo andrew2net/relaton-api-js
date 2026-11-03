@@ -1,20 +1,27 @@
 name: ingest
 
+# The v2 producer is the one ingestion path: it walks the flavor's Pages
+# machine index, posts model-JSON chunks to /admin/ingest-v2, and
+# reconciles the flavor (rows the wave never re-stamped are ghosts).
+# The weekly schedule sweeps the fleet serially — parallel heavy legs
+# saturate D1 (CPU-time-limit resets); dataset push dispatches come per
+# flavor from the relaton-data-* repos.
+
 on:
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:
     inputs:
-      flavors:
-        description: "Space-separated flavor list (defaults to all)"
+      v2_flavors:
+        description: "Space-separated flavors to ingest into storage v2"
         required: false
         default: ""
-      skip:
-        description: "Skip the first N files of each flavor's sorted file list (shard start)"
-        required: false
-        default: "0"
       limit:
-        description: "Process at most N files after skip (shard size; empty = all)"
+        description: "Process at most N documents per flavor (shard size; empty = all)"
+        required: false
+        default: ""
+      v2_from_chunk:
+        description: "Resume after this many chunks (chunk count to drain before posting)"
         required: false
         default: ""
       reconcile_flavor:
@@ -23,14 +30,6 @@ on:
         default: ""
       reconcile_before:
         description: "Reconcile cutoff: delete rows not re-stamped since this ISO timestamp"
-        required: false
-        default: ""
-      v2_flavors:
-        description: "Space-separated flavors to also ingest into storage v2 (documents_v2)"
-        required: false
-        default: ""
-      v2_from_chunk:
-        description: "Resume the v2 legs after this many chunks (chunk count to drain before posting)"
         required: false
         default: ""
   # relaton-data-* repos dispatch this on push (client_payload.flavor), so
@@ -50,86 +49,16 @@ jobs:
           FLAVOR: ${{ inputs.reconcile_flavor }}
           BEFORE: ${{ inputs.reconcile_before }}
         run: |
-          curl -sf -X POST "https://api.relaton.org/admin/reconcile/$FLAVOR" \
+          curl -sf -X POST "https://api.relaton.org/admin/reconcile-v2/$FLAVOR" \
             -H "Authorization: Bearer $ADMIN_TOKEN" \
             -H "content-type: application/json" \
             -d "{\"before\": \"$BEFORE\"}" | jq -c .
 
   matrix:
-    # A manual-reconcile dispatch runs reconcile-manual only: without this
-    # gate the matrix falls back to the full flavor list and the run
-    # re-ingests the whole fleet beside the reconcile. A v2-only dispatch
-    # (flavors unset, v2_flavors set) skips the v1 legs — a big flavor's
-    # full v1 re-ingest is the weekly sweep's job, not a side effect.
+    # A manual-reconcile dispatch runs reconcile-manual only. The weekly
+    # schedule and targeted dispatches drive the flavor matrix.
     if: github.event_name != 'repository_dispatch' && inputs.reconcile_flavor == ''
-      && (github.event_name != 'workflow_dispatch' || inputs.flavors != '' || inputs.v2_flavors == '')
-    runs-on: ubuntu-latest
-    outputs:
-      flavors: ${{ steps.set.outputs.flavors }}
-    steps:
-      - id: set
-        env:
-          FLAVORS: ${{ inputs.flavors }}
-        run: |
-          # The dispatch input replaces the whole matrix so a shard run
-          # (skip/limit below) processes only the flavor it names.
-          if [ -n "$FLAVORS" ]; then
-            echo "flavors=$(echo "$FLAVORS" | jq -Rc 'split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
-          else
-            echo 'flavors=["3gpp","adobe","bipm","calconnect","ccsds","cie","easc","ecma","etsi","gost","iala","iana","iec","ieee","ietf","iho","iso","itu-r","itu","jcgm","jis","nist","oasis","ogc","oiml","plateau","rfcs","rfcsubseries","w3c","xsf"]' >> "$GITHUB_OUTPUT"
-          fi
-
-  ingest:
-    if: github.event_name != 'repository_dispatch'
-    needs: matrix
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        flavor: ${{ fromJSON(needs.matrix.outputs.flavors) }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: relaton/relaton-data-${{ matrix.flavor }}
-          path: data/relaton-data-${{ matrix.flavor }}
-      - uses: ruby/setup-ruby@v1
-        with:
-          working-directory: tools
-          ruby-version: "3.4"
-          bundler-cache: false
-      - name: Bundle install
-        working-directory: tools
-        env:
-          RELATON_GEM: ${{ vars.RELATON_GEM }}
-          PUBID_GEM: ${{ vars.PUBID_GEM }}
-        run: bundle install
-      - name: Build chunks
-        working-directory: tools
-        env:
-          RELATON_GEM: ${{ vars.RELATON_GEM }}
-          PUBID_GEM: ${{ vars.PUBID_GEM }}
-          SKIP: ${{ inputs.skip }}
-          LIMIT: ${{ inputs.limit }}
-        run: |
-          # Sharded dispatches process a window of the sorted file list; the
-          # upserts are disjoint, so shard runs compose into a full ingest.
-          args=""
-          [ -n "$SKIP" ] && args="$args --skip $SKIP"
-          [ -n "$LIMIT" ] && args="$args --limit $LIMIT"
-          bundle exec ruby build_ingest.rb -r ../data/relaton-data-${{ matrix.flavor }} -f ${{ matrix.flavor }} -o out/${{ matrix.flavor }} $args
-      - name: Post chunks
-        env:
-          ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
-        run: tools/post_chunks.sh tools/out/${{ matrix.flavor }} https://api.relaton.org "$ADMIN_TOKEN"
-
-  # Storage v2 rollout (TODO.api/02): the pure-TS producer walks the
-  # flavor's Pages machine index and posts model-JSON chunks to
-  # /admin/ingest-v2. Dispatch-driven per flavor — a full-flavor run
-  # fetches every dataset document, so the fleet fills flavor by flavor,
-  # not in the weekly sweep.
-  v2-matrix:
-    if: github.event_name == 'workflow_dispatch' && inputs.v2_flavors != ''
+      && (github.event_name == 'schedule' || inputs.v2_flavors != '')
     runs-on: ubuntu-latest
     outputs:
       flavors: ${{ steps.set.outputs.flavors }}
@@ -137,15 +66,23 @@ jobs:
       - id: set
         env:
           FLAVORS: ${{ inputs.v2_flavors }}
-        run: echo "flavors=$(echo "$FLAVORS" | jq -Rc 'split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -n "$FLAVORS" ]; then
+            echo "flavors=$(echo "$FLAVORS" | jq -Rc 'split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+          else
+            echo 'flavors=["3gpp","adobe","bipm","calconnect","ccsds","cie","easc","ecma","etsi","gost","iala","iana","iec","ieee","ietf","iho","iso","itu-r","itu","jcgm","jis","nist","oasis","ogc","oiml","plateau","rfcs","rfcsubseries","w3c","xsf"]' >> "$GITHUB_OUTPUT"
+          fi
 
   ingest-v2:
-    needs: v2-matrix
+    needs: matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     strategy:
       fail-fast: false
+      # One heavy producer walk at a time: parallel legs saturate D1.
+      max-parallel: 1
       matrix:
-        flavor: ${{ fromJSON(needs.v2-matrix.outputs.flavors) }}
+        flavor: ${{ fromJSON(needs.matrix.outputs.flavors) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -165,76 +102,46 @@ jobs:
           [ -n "$FROM_CHUNK" ] && args="$args --from-chunk $FROM_CHUNK"
           node packages/relaton-api/bin/relaton-api.mjs ingest ${{ matrix.flavor }} \
             --v2 --base https://api.relaton.org --token-env ADMIN_TOKEN $args
-
-  # Only the completed v2 wave reconciles: rows the run re-stamped stay,
-  # ghosts (renamed/churned documents) go. A failed leg skips it.
-  reconcile-v2:
-    needs: [v2-matrix, ingest-v2]
-    if: always() && needs.ingest-v2.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Reconcile v2 flavors
+      # Only a full (unsharded) wave reconciles: a limited shard leaves the
+      # rest of the flavor's rows un-stamped, and deleting them would be
+      # worse than keeping the ghosts another cycle.
+      - name: Reconcile the flavor
+        if: inputs.limit == '' && inputs.v2_from_chunk == ''
         env:
           ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
         run: |
-          for f in $(echo '${{ needs.v2-matrix.outputs.flavors }}' | jq -r '.[]'); do
-            echo "reconciling v2 $f (before ${{ github.run_started_at }})"
-            curl -sf -X POST "https://api.relaton.org/admin/reconcile-v2/$f" \
-              -H "Authorization: Bearer $ADMIN_TOKEN" \
-              -H "content-type: application/json" \
-              -d "{\"before\": \"${{ github.run_started_at }}\"}" | jq -c .
-          done
-
-  # The weekly sweep is the only event that re-stamps every flavor in one
-  # run, so it is the only safe reconcile trigger: rows the run did not
-  # touch are ghosts (renamed/churned documents). A failed leg skips the
-  # reconcile — deleting that leg's window would be worse than keeping its
-  # ghosts for a week.
-  reconcile:
-    if: github.event_name == 'schedule' && needs.ingest.result == 'success'
-    needs: [matrix, ingest]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Reconcile flavors
-        env:
-          ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
-        run: |
-          for f in $(echo '${{ needs.matrix.outputs.flavors }}' | jq -r '.[]'); do
-            echo "reconciling $f (before ${{ github.run_started_at }})"
-            curl -sf -X POST "https://api.relaton.org/admin/reconcile/$f" \
-              -H "Authorization: Bearer $ADMIN_TOKEN" \
-              -H "content-type: application/json" \
-              -d "{\"before\": \"${{ github.run_started_at }}\"}" | jq -c .
-          done
+          echo "reconciling ${{ matrix.flavor }} (before ${{ github.run_started_at }})"
+          curl -sf -X POST "https://api.relaton.org/admin/reconcile-v2/${{ matrix.flavor }}" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "content-type: application/json" \
+            -d "{\"before\": \"${{ github.run_started_at }}\"}" | jq -c .
 
   # One relaton-data-* slice, dispatched by that dataset's own push workflow.
   ingest-dispatch:
     if: github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          repository: relaton/relaton-data-${{ github.event.client_payload.flavor }}
-          path: data/relaton-data-${{ github.event.client_payload.flavor }}
-      - uses: ruby/setup-ruby@v1
-        with:
-          working-directory: tools
-          ruby-version: "3.4"
-          bundler-cache: false
-      - name: Bundle install
-        working-directory: tools
-        env:
-          RELATON_GEM: ${{ vars.RELATON_GEM }}
-          PUBID_GEM: ${{ vars.PUBID_GEM }}
-        run: bundle install
-      - name: Build chunks
-        working-directory: tools
-        env:
-          RELATON_GEM: ${{ vars.RELATON_GEM }}
-          PUBID_GEM: ${{ vars.PUBID_GEM }}
-        run: bundle exec ruby build_ingest.rb -r ../data/relaton-data-${{ github.event.client_payload.flavor }} -f ${{ github.event.client_payload.flavor }} -o out/${{ github.event.client_payload.flavor }}
-      - name: Post chunks
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Ingest into storage v2
         env:
           ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
-        run: tools/post_chunks.sh tools/out/${{ github.event.client_payload.flavor }} https://api.relaton.org "$ADMIN_TOKEN"
+          GITHUB_TOKEN: ${{ github.token }}
+          FLAVOR: ${{ github.event.client_payload.flavor }}
+        run: |
+          node packages/relaton-api/bin/relaton-api.mjs ingest "$FLAVOR" \
+            --v2 --base https://api.relaton.org --token-env ADMIN_TOKEN
+      - name: Reconcile the flavor
+        env:
+          ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
+          FLAVOR: ${{ github.event.client_payload.flavor }}
+        run: |
+          curl -sf -X POST "https://api.relaton.org/admin/reconcile-v2/$FLAVOR" \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "content-type: application/json" \
+            -d "{\"before\": \"${{ github.run_started_at }}\"}" | jq -c .

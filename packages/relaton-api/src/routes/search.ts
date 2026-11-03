@@ -2,7 +2,6 @@ import { logoUrl } from "../lib/publishers";
 import type { AppEnv } from "../env";
 import { layout, escapeHtml } from "./ui/chrome";
 import { STATUS_WORDS } from "./ui/record";
-import { hybridSearch as legacyHybridSearch, type SearchParams, type SearchResult } from "../lib/search";
 import * as v2 from "../lib/search2";
 
 // Global pubid/keyword search across every flavor, with facets, sorting,
@@ -100,7 +99,7 @@ function pageHref(current: URLSearchParams, page: number): string {
   return `/search?${params.toString()}`;
 }
 
-function parseParams(url: URL): SearchParams {
+function parseParams(url: URL): v2.SearchParamsV2 {
   const num = (name: string): number | null => {
     const v = url.searchParams.get(name);
     return v && /^\d+$/.test(v) ? Number(v) : null;
@@ -110,7 +109,7 @@ function parseParams(url: URL): SearchParams {
   const sortRaw = url.searchParams.get("sort") ??
     (url.searchParams.get("q") ? "relevance" : "year_desc");
   const sort = (["relevance", "year_desc", "year_asc", "docid"] as const).includes(sortRaw as never)
-    ? (sortRaw as SearchParams["sort"])
+    ? (sortRaw as v2.SearchParamsV2["sort"])
     : "relevance";
   return {
     q: url.searchParams.get("q")?.trim() || undefined,
@@ -156,28 +155,12 @@ interface RenderItem {
   status: string | null;
 }
 
-// The two engines carry different field names (title/title_en, file/r2_key);
-// the renderer consumes one normalized shape.
-type AnyHit = {
-  docid: string | null;
-  flavor: string;
-  year: number | null;
-  doctype: string | null;
-  status: string | null;
-  file?: string;
-  title?: string | null;
-  r2_key?: string;
-  title_en?: string | null;
-};
-
-function renderItemsOf(items: AnyHit[]): RenderItem[] {
+function renderItemsOf(items: v2.SearchHitV2[]): RenderItem[] {
   return items.map((d) => ({
     docid: d.docid,
     flavor: d.flavor,
-    entryKey: d.file !== undefined
-      ? v2.entryKeyOf(d.file)
-      : d.r2_key!.slice(d.flavor.length + 1).replace(/^data\//, ""),
-    title: d.title ?? d.title_en ?? null,
+    entryKey: v2.entryKeyOf(d.file),
+    title: d.title,
     year: d.year,
     doctype: d.doctype,
     status: d.status,
@@ -217,7 +200,7 @@ function renderResults(items: RenderItem[], collection: string | undefined, quer
   }).join("");
 }
 
-function renderPager(r: SearchResult, params: URLSearchParams): string {
+function renderPager(r: v2.SearchResultV2, params: URLSearchParams): string {
   const info = `${(r.total).toLocaleString("en-US")} results · page ${r.page + 1}`;
   return `<div class="pager">
     ${r.hasPrev ? `<a href="${pageHref(params, r.page - 1)}">&larr; Previous</a>` : "<span></span>"}
@@ -239,12 +222,8 @@ export async function renderSearchPage(
   opts: SearchPageOptions = {},
 ): Promise<string> {
   const params = parseParams(url);
-  // The v2 projection (migration 0009) is the engine once its backfill
-  // has filled the tables; until then the v1 store keeps serving.
-  const result = (await v2.searchReady(db))
-    ? await v2.hybridSearch(db, env as never, params as v2.SearchParamsV2, { scopeFlavor: opts.scopeFlavor })
-    : await legacyHybridSearch(db, env, params, { scopeFlavor: opts.scopeFlavor });
-  const items = renderItemsOf(result.items as unknown as AnyHit[]);
+  const result = await v2.hybridSearch(db, env as never, params, { scopeFlavor: opts.scopeFlavor });
+  const items = renderItemsOf(result.items);
   const qs = new URLSearchParams(url.searchParams);
   qs.delete("page");
 
@@ -303,7 +282,7 @@ ${scopeMeta}
   <div>
     <p class="results-info">${result.total.toLocaleString("en-US")} documents</p>
     ${renderResults(items, opts.scopeFlavor, params.q ?? "")}
-    ${renderPager(result as SearchResult, qs)}
+    ${renderPager(result, qs)}
   </div>
 </div>`;
 

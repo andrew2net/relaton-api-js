@@ -8,13 +8,6 @@ import * as v2 from "../lib/search2";
 // HTML served by the same routes that answer JSON to API clients — the
 // content type follows the request's Accept header, never a different URL.
 
-interface FlavorRowV1 {
-  flavor: string;
-  doc_count: number;
-  last_modified: string | null;
-  ingested_at: string;
-}
-
 interface EntryRow {
   docid: string | null;
   r2_key: string;
@@ -74,11 +67,8 @@ export function wantsHtml(accept: string | undefined): boolean {
 
 /** Browsable list of collections. */
 export async function renderCollections(db: D1Database): Promise<string> {
-  const flavors = (await v2.searchReady(db))
-    ? (await v2.listFlavors(db)).map((f) => ({ flavor: f.flavor, doc_count: f.doc_count, last_modified: f.last_modified }))
-    : ((await db.prepare(
-      "SELECT flavor, doc_count, last_modified FROM flavors ORDER BY flavor",
-    ).all<FlavorRowV1>()).results ?? []);
+  const flavors = (await v2.listFlavors(db))
+    .map((f) => ({ flavor: f.flavor, doc_count: f.doc_count, last_modified: f.last_modified }));
 
   const rows = flavors
     .map((f) => {
@@ -111,7 +101,7 @@ ${rows}
 
 /**
  * Entry keys mirror the repo layout (data/…). URLs may carry the bare or
- * the prefixed form — resolve both. The v2 projection stores the dataset
+ * the prefixed form — resolve both. The projection stores the dataset
  * file; its R2 blob key is derived, keeping the same address space.
  */
 export async function findEntryRow(
@@ -119,15 +109,9 @@ export async function findEntryRow(
   collection: string,
   key: string,
 ): Promise<EntryRow | null> {
-  if (await v2.searchReady(db)) {
-    const row = await v2.findEntryRow(db, collection, key);
-    if (!row) return null;
-    return { docid: row.docid, r2_key: v2.blobKeyOf(collection, row.file) };
-  }
-  const storageKey = key.startsWith("data/") ? key : `data/${key}`;
-  return db.prepare(
-    "SELECT docid, r2_key FROM documents WHERE flavor = ? AND r2_key IN (?, ?)",
-  ).bind(collection, `${collection}/${key}`, `${collection}/${storageKey}`).first<EntryRow>();
+  const row = await v2.findEntryRow(db, collection, key);
+  if (!row) return null;
+  return { docid: row.docid, r2_key: v2.blobKeyOf(collection, row.file) };
 }
 
 /**

@@ -8,6 +8,11 @@ name: set-components
 
 on:
   workflow_dispatch:
+    inputs:
+      flavor:
+        description: "Scope the walk to one flavor (blank = all rows)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -26,4 +31,5 @@ jobs:
       - name: Run the component walk
         env:
           ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
+          FLAVOR: ${{ github.event.inputs.flavor || '' }}
         run: node tools/set_components.mjs

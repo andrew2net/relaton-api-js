@@ -5,12 +5,12 @@ interface FakeFlavor {
   flavor: string;
   doc_count: number;
   last_modified: string | null;
-  ingested_at: string;
+  indexed_at: string;
 }
 
 function makeEnv(opts: {
   flavor: FakeFlavor | null;
-  entry: { docid: string; r2_key: string } | null;
+  entry: { docid: string; file: string } | null;
   docids: string[];
   objects?: Record<string, string>;
 }) {
@@ -23,31 +23,28 @@ function makeEnv(opts: {
         first: async () => {
           if (/COUNT\(\*\) AS n/.test(sql)) return { n: opts.docids.length };
           if (sql.includes("FROM flavors")) return opts.flavor;
-          // The v1 tables only: the documents_search probe must fall
-          // through (these fakes model a store whose v2 backfill has not
-          // run, exercising the legacy path).
-          if (/FROM documents\b(?!_search)/.test(sql)) return opts.entry;
+          // The projection stores the dataset file; the entry lookup
+          // resolves candidates against it.
+          if (sql.includes("FROM documents_search")) return opts.entry;
           return null;
         },
         all: async () => {
           if (/AS value, COUNT\(\*\) AS count/.test(sql)) {
             return { results: [{ value: "standard", count: opts.docids.length }] };
           }
-          if (/FROM documents\b(?!_search)/.test(sql)) {
+          if (sql.includes("FROM documents_search")) {
             return {
               results: opts.docids.map((docid) => ({
+                key: docid,
                 flavor: "ietf",
                 docid,
-                r2_key: `ietf/${docid.toLowerCase()}`,
+                file: `data/${docid.toLowerCase().replace(/\s+/g, "-")}.yaml`,
                 year: 2020,
-                doctype: null,
-                status: null,
-                title_en: null,
-                norm: docid,
+                norm: docid.toUpperCase().replace(/\s+/g, ""),
               })),
             };
           }
-          if (sql.includes("FROM flavors")) return { results: [opts.flavor] };
+          if (sql.includes("FROM flavors")) return { results: opts.flavor ? [opts.flavor] : [] };
           return { results: [] };
         },
       };
@@ -65,7 +62,7 @@ const flavorRow: FakeFlavor = {
   flavor: "ietf",
   doc_count: 2,
   last_modified: "2026-09-25T00:00:00Z",
-  ingested_at: "2026-09-25T01:00:00Z",
+  indexed_at: "2026-09-25T01:00:00Z",
 };
 
 describe("lutaml cloud store contract", () => {
@@ -91,7 +88,7 @@ describe("lutaml cloud store contract", () => {
     expect(manifest.version).toBe(1);
     expect(manifest.count).toBe(2);
     expect(manifest.generated).toBe("2026-09-25T00:00:00Z");
-    expect(manifest.entries.map((e) => e.key)).toEqual(["rfc 7231", "rfc 3986"]);
+    expect(manifest.entries.map((e) => e.key)).toEqual(["rfc-7231", "rfc-3986"]);
     expect(manifest.entries[1]?.metadata).toEqual({ docid: "RFC 3986" });
     expect(res.headers.get("cache-control")).toContain("max-age");
     expect(res.headers.get("etag")).toBeTruthy();
@@ -101,11 +98,11 @@ describe("lutaml cloud store contract", () => {
     const app = createApp({});
     const env = makeEnv({
       flavor: flavorRow,
-      entry: { docid: "RFC 7231", r2_key: "ietf/rfc7231" },
+      entry: { docid: "RFC 7231", file: "data/rfc-7231.yaml" },
       docids: ["RFC 7231"],
-      objects: { "ietf/rfc7231": "id: RFC7231\n" },
+      objects: { "ietf/data/rfc-7231": "id: RFC7231\n" },
     });
-    const res = await app.request("/collections/ietf/entries/rfc%207231", {}, env as never);
+    const res = await app.request("/collections/ietf/entries/rfc-7231", {}, env as never);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/yaml");
     expect(await res.text()).toBe("id: RFC7231\n");
@@ -130,9 +127,9 @@ describe("lutaml cloud store contract", () => {
 describe("lutaml cloud store UI", () => {
   const htmlEnv = makeEnv({
     flavor: flavorRow,
-    entry: { docid: "RFC 7231", r2_key: "ietf/rfc7231" },
+    entry: { docid: "RFC 7231", file: "data/rfc-7231.yaml" },
     docids: ["RFC 3986", "RFC 7231"],
-    objects: { "ietf/rfc7231": "id: RFC7231\n" },
+    objects: { "ietf/data/rfc-7231": "id: RFC7231\n" },
   });
 
   it("serves JSON to clients and a browsable page to browsers on /collections", async () => {
@@ -156,14 +153,14 @@ describe("lutaml cloud store UI", () => {
     }, htmlEnv as never);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("/collections/ietf/entries/rfc%207231");
+    expect(html).toContain("/collections/ietf/entries/rfc-7231");
     expect(html).toContain("manifest.json");
     expect(html).toContain("page 2"); // page=1 renders as page 2 (1-based)
   });
 
   it("frames an entry for browsers and links the raw bytes", async () => {
     const app = createApp({});
-    const res = await app.request("/collections/ietf/entries/rfc%207231", {
+    const res = await app.request("/collections/ietf/entries/rfc-7231", {
       headers: { Accept: "text/html" },
     }, htmlEnv as never);
     expect(res.status).toBe(200);
@@ -174,7 +171,7 @@ describe("lutaml cloud store UI", () => {
 
   it("keeps raw bytes for API clients regardless of Accept", async () => {
     const app = createApp({});
-    const client = await app.request("/collections/ietf/entries/rfc%207231", {
+    const client = await app.request("/collections/ietf/entries/rfc-7231", {
       headers: { Accept: "*/*" },
     }, htmlEnv as never);
     expect(client.headers.get("content-type")).toBe("application/yaml");
@@ -191,13 +188,13 @@ describe("lutaml cloud store UI", () => {
     const app = createApp({});
     const env = makeEnv({
       flavor: flavorRow,
-      entry: { docid: "RFC 7231", r2_key: "ietf/rfc-7231" },
+      entry: { docid: "RFC 7231", file: "data/rfc-7231.yaml" },
       docids: ["RFC 7231"],
-      objects: { "ietf/rfc-7231": xml },
+      objects: { "ietf/data/rfc-7231": xml },
     });
 
     const res = await app.request(
-      "/collections/ietf/entries/rfc%207231/export.jsonld",
+      "/collections/ietf/entries/rfc-7231/export.jsonld",
       {},
       env as never,
     );
@@ -233,16 +230,16 @@ docidentifier:
   function yamlEnv() {
     return makeEnv({
       flavor: flavorRow,
-      entry: { docid: "RFC 7231", r2_key: "ietf/rfc-7231" },
+      entry: { docid: "RFC 7231", file: "data/rfc-7231.yaml" },
       docids: ["RFC 7231"],
-      objects: { "ietf/rfc-7231": yaml },
+      objects: { "ietf/data/rfc-7231": yaml },
     });
   }
 
   function exportAs(format: string, env: unknown) {
     const app = createApp({});
     return app.request(
-      `/collections/ietf/entries/rfc%207231/export.${format}`,
+      `/collections/ietf/entries/rfc-7231/export.${format}`,
       {},
       env as never,
     );
