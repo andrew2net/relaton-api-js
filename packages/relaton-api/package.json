@@ -1,6 +1,6 @@
 {
   "name": "@relaton/api",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Relaton bibliographic API: a deployable Cloudflare Worker app (REST + GraphQL + MCP + cloud store) and a CLI (init/check/deploy/ingest) serving every relaton-data-* collection.",
   "license": "BSD-2-Clause",
   "type": "module",
