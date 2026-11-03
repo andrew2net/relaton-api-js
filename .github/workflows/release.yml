@@ -47,7 +47,20 @@ jobs:
           npm install --package-lock-only
       - name: Publish (npm trusted publishing, OIDC)
         working-directory: packages/relaton-api
-        run: npm publish --provenance --access public
+        env:
+          # Trusted publishing authenticates through the runner's OIDC
+          # token and is only attempted when npm has no auth token —
+          # a repo NODE_AUTH_TOKEN secret would silently switch the
+          # publish to token auth and never validate the configuration.
+          NPM_CONFIG_USERCONFIG: /tmp/tp.npmrc
+        run: |
+          printf 'registry=https://registry.npmjs.org/\n' > /tmp/tp.npmrc
+          # npm refuses a prerelease under the default latest tag.
+          if node -p 'require("./package.json").version.includes("-")' | grep -q true; then
+            npm publish --provenance --access public --tag next
+          else
+            npm publish --provenance --access public --tag latest
+          fi
       - name: Commit and tag the release
         run: |
           git config user.name "github-actions[bot]"
