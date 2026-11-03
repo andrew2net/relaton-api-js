@@ -1,6 +1,6 @@
 {
   "name": "relaton-api contract fixtures",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Executable contract (TODO.api/12), v3-only since the /api/v1 cutover: every fixture is a GET against a base URL. Assertions are the stable contract surface only — status, headers, and pinned identifiers — never titles or dates, which drift with the datasets.",
   "baseUrlEnv": "RELATON_API_BASE_URL",
   "fixtures": [
@@ -83,6 +83,17 @@
         "contentType": "application/json",
         "bodyContains": [
           "\"items\""
+        ]
+      }
+    },
+    {
+      "name": "search: q matches identifiers, not only titles",
+      "path": "/v3/documents?q=19115&flavor=iso&limit=5",
+      "expect": {
+        "status": 200,
+        "contentType": "application/json",
+        "bodyContains": [
+          "19115"
         ]
       }
     },
