@@ -112,6 +112,51 @@ describe("GET /v3/documents/{key}", () => {
     expect(await res.text()).toBe("");
   });
 
+  it("serves repeat fetches from the version-stamped edge cache", async () => {
+    // ISO 99999:2999 is the one seeded document no earlier test GETs, so
+    // the first fetch here is a genuine miss.
+    const first = await SELF.fetch("http://localhost/v3/documents/ISO%2099999:2999");
+    expect(first.headers.get("X-Relaton-Cache")).toBe("miss");
+    const body = await first.text();
+
+    const second = await SELF.fetch("http://localhost/v3/documents/ISO%2099999:2999");
+    expect(second.headers.get("X-Relaton-Cache")).toBe("hit");
+    expect(second.headers.get("ETag")).toBe(first.headers.get("ETag"));
+    expect(await second.text()).toBe(body);
+
+    // Spelling variants of the same key share the canonical entry.
+    const variant = await SELF.fetch("http://localhost/v3/documents/ISO-99999-2999");
+    expect(variant.headers.get("X-Relaton-Cache")).toBe("hit");
+    await variant.text();
+  });
+
+  it("serves fresh content after a re-ingest bumps the key version", async () => {
+    const before = await SELF.fetch("http://localhost/v3/documents/ISO%2019115-1:2014");
+    const oldEtag = before.headers.get("ETag")!;
+    await before.text();
+
+    const updated = DOC("ISO 19115-1:2014", "2014", "Metadata, revised");
+    const res = await SELF.fetch("http://localhost/admin/ingest-v2/iso", auth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        flavor: "iso",
+        repo: "relaton/relaton-data-iso",
+        final: true,
+        relatonVersion: "3.0.4",
+        rows: [{ key: "ISO 19115-1:2014", file: "data/iso-19115-1-2014.yaml", data: updated, keys: ["ISO19115-1:2014"] }],
+        blobs: {},
+      }),
+    }));
+    expect(res.status).toBe(200);
+
+    const after = await SELF.fetch("http://localhost/v3/documents/ISO%2019115-1:2014");
+    expect(after.headers.get("X-Relaton-Cache")).toBe("miss");
+    expect(after.headers.get("ETag")).not.toBe(oldEtag);
+    const body = await after.json<{ title: { content: string }[] }>();
+    expect(body.title[0]!.content).toBe("Metadata, revised");
+  });
+
   it("normalizes key spelling through the lookup tokens", async () => {
     // The dataset's normKey token (uppercased, whitespace-stripped) backs
     // the fallback, so case and spacing variants of a key resolve.
