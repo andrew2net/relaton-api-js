@@ -5,8 +5,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { env } from "cloudflare:test";
 import { searchDocuments } from "../src/lib/search";
-import schemaSql from "../../../migrations/0001_init.sql?raw";
-import componentsSql from "../../../migrations/0005_document_components.sql?raw";
+import schemaSql from "../migrations/0001_init.sql?raw";
+import componentsSql from "../migrations/0005_document_components.sql?raw";
 
 function seed(
   file: string,

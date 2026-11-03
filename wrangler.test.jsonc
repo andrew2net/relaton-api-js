@@ -2,6 +2,7 @@
   "name": "api-relaton-org-test",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
+  "migrations_dir": "packages/relaton-api/migrations",
   // The admin routes are token-gated; tests post with this var's value.
   "vars": {
     "ADMIN_TOKEN": "test-token"

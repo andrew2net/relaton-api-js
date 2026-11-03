@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
-import schemaSql from "../migrations/0001_init.sql?raw";
+import schemaSql from "../packages/relaton-api/migrations/0001_init.sql?raw";
 
 const XML = (id: string) =>
   `<?xml version="1.0" encoding="UTF-8"?>\n<bibdata type="standard"><docidentifier type="ISO" primary="true">${id}</docidentifier><title language="en" script="Latn" type="main">Sample document ${id}</title></bibdata>`;

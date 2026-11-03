@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts"
+  "description": "Corpus parity harness for the pubid key derivation shipped in @relaton/api: golden fixtures generated from the pubid ruby gem pin canonical renders and lookup keys.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/relaton/relaton-api-js.git",
+    "directory": "packages/pubid-ts"
+  }
 }

@@ -3,6 +3,7 @@
   "name": "api-relaton-org",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
+  "migrations_dir": "packages/relaton-api/migrations",
   "workers_dev": true,
   "vars": {
     "API_VERSION": "3.0.0"

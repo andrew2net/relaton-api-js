@@ -9,7 +9,7 @@ import {
   searchDocumentPages,
   type StorageV2Doc,
 } from "../lib/storage2";
-import { normKey } from "pubid-ts/src/keys.ts";
+import { normKey } from "../pubid/keys.ts";
 
 // The model-faithful GraphQL schema (TODO.api/04): it mirrors the Relaton
 // bibliographic model, reading the lossless `data` JSON from storage v2 —

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalize, parse, yearOf } from "../src/index";
+import { canonicalize, parse, yearOf } from "@relaton/api";
 import corpus from "./corpus.json";
 
 interface CorpusEntry {

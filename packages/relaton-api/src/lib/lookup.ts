@@ -1,5 +1,5 @@
-import { canonicalize, yearOf } from "pubid-ts";
-import { lastPublisherKey, normKey, undatedKey } from "pubid-ts";
+import { canonicalize, yearOf } from "../pubid/index.ts";
+import { lastPublisherKey, normKey, undatedKey } from "../pubid/index.ts";
 
 export interface DocumentRow {
   id: number;
