@@ -4,7 +4,7 @@ import type { AppEnv } from "../env";
 import { getDocument, getDocumentByLookupKey, pageSummaries, searchDocumentPages, type StorageV2Doc } from "../lib/storage2";
 // Deep path: self-contained and extension-free, loadable under plain node
 // as well as the bundler (same import discipline produce.ts uses).
-import { normKey } from "pubid-ts/src/keys.ts";
+import { normKey } from "../pubid/keys.ts";
 
 // API v3 (TODO.api/03): the modern surface over the storage v2 loader —
 // content negotiation, RFC 9457 problem+json errors, strong ETags with

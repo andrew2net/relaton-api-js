@@ -23,17 +23,22 @@ can invoke it with its own `base_url`.
 
 `fixtures.json` carries a `version` field, and the runner prints it — a
 CI log names the exact contract a suite was held to. This repository
-always runs the fixtures from its working tree; consumers pin a
-revision:
+always runs the fixtures from its working tree; consumers consume
+**released code**, never a moving checkout:
 
-- **relaton-api-ruby's CI** fetches `run.mjs` + `fixtures.json` from a
-  pinned commit SHA of this repo (the SHA in its `rake.yml`, named with
-  the contract version it carries). Upgrading the pin is a deliberate
-  PR there, driven by a fixture change here.
+- The fixtures ship inside the published `@relaton/api` npm package
+  (`contract/run.mjs` + `contract/fixtures.json`). A fixture change here
+  is followed by an `@relaton/api` release (`release.yml`, npm trusted
+  publishing) — raw commit URLs are never a distribution channel.
+- **relaton-api-ruby's CI** extracts the contract from a released
+  version (`npm pack @relaton/api@X.Y.Z`) and runs it against
+  production; bumping that version is a deliberate PR there, driven by
+  a release here.
 - **The deployment smoke** (`contract.yml` `workflow_call`) runs from
   the caller's checkout, so it is pinned by whichever ref the caller
   checks out.
 
 Protocol for a fixture change here: bump `version` (patch for additive
 fixtures, minor for tightened assertions, major for a breaking change),
-merge, then raise the pin-bump PR in each consumer repo.
+merge, release the package, then raise the version-bump PR in each
+consumer repo.

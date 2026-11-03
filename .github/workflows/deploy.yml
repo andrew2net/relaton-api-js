@@ -24,6 +24,9 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # The @pubid/pubid engine cross-check runs under node --test (its
+      # parsanol runtime needs a real filesystem at import time).
+      - run: npm run test:engine
       - name: Dry-run the worker bundle
         run: npx wrangler deploy --dry-run --outdir dist-dry
 

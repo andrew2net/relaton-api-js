@@ -8,7 +8,7 @@ import { load as loadYaml } from "js-yaml";
 // Deep path: keys.ts is self-contained and extension-free, so this loads
 // under plain node (the CLI's runtime) as well as under the bundler —
 // pubid-ts's barrel imports its siblings without extensions.
-import { normKey } from "pubid-ts/src/keys.ts";
+import { normKey } from "../pubid/keys.ts";
 
 export interface V2Chunk {
   flavor: string;

@@ -1,7 +1,7 @@
 import type { AppEnv } from "../env";
 import { layout, escapeHtml } from "./ui/chrome";
 import { parseItem, toYaml, toXml, toJson, toAsciiBib, toIso690, toBibtex, toRis, toCslJson, slugAnchor, type RelatonItem } from "relaton";
-import { parse as parsePubid } from "pubid-ts";
+import { parse as parsePubid } from "../pubid/index.ts";
 import { RECORD_CSS } from "./ui/record";
 
 // Citation-formatter-style builder for a Relaton bibliographic record:

@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
-import schemaSql from "../../../migrations/0001_init.sql?raw";
-import storageV2Sql from "../../../migrations/0007_storage_v2.sql?raw";
+import schemaSql from "../migrations/0001_init.sql?raw";
+import storageV2Sql from "../migrations/0007_storage_v2.sql?raw";
 
 // The model-faithful GraphQL schema (TODO.api/04) over storage v2.
 const ISO_DOC = {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allPartsKey, deriveKeys, normalizeCode, normKey, undatedKey } from "../src/keys";
+import { allPartsKey, deriveKeys, normalizeCode, normKey, undatedKey } from "@relaton/api";
 
 describe("normalizeCode", () => {
   it("collapses em/en dashes and unicode whitespace", () => {

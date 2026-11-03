@@ -10,6 +10,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "vitest run",
+    "test:engine": "node --test packages/pubid-ts/test/engine.test.mjs",
     "test:contract": "node packages/relaton-api/contract/run.mjs",
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply api-relaton-org --local",
@@ -24,12 +25,12 @@
     "graphql-yoga": "^5.21.3",
     "hono": "^4.13.2",
     "js-yaml": "^5.3.0",
-    "pubid-ts": "*",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.21.3",
     "@cloudflare/workers-types": "^5.20260816.1",
+    "@pubid/pubid": "^0.1.31",
     "@types/js-yaml": "^4.0.9",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",

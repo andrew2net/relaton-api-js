@@ -24,7 +24,19 @@ library; deployments are 3-line entries plus `relaton-api.yaml`.
 
 ## Remaining
 
-- [ ] Publish via GitHub trusted publishing; deployment repos pin versions.
+- [x] Publish: `@relaton/api` ships the library + CLI + contract fixtures
+      + migrations; `release.yml` publishes via npm trusted publishing
+      (OIDC — the operator dispatches with the exact version; the
+      Trusted Publisher registration on npmjs.com names this workflow).
+      Consumers pin released versions (`npm pack @relaton/api@X.Y.Z`),
+      never raw commits. The pubid grammar engine is consumed from the
+      released `@pubid/pubid` (node-side harness cross-check; its
+      parsanol runtime needs a real filesystem, so the worker keeps the
+      corpus-pinned local key derivation).
+- [ ] Owner: register the npm Trusted Publisher for `@relaton/api`
+      (npmjs.com → org relaton → the package name → repository
+      relaton/relaton-api-js, workflow `release.yml`), then dispatch the
+      first release.
 - [ ] Dogfood: second instance from pure config on workers.dev, zero code
       edits.
 

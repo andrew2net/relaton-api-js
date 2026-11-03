@@ -333,7 +333,7 @@ export default {
 
   // Deployments apply their own copy of the D1 migrations; the source only
   // exists inside this workspace, so a scaffold elsewhere ships without.
-  const migrationsSrc = fileURLToPath(new URL("../../../migrations/", import.meta.url));
+  const migrationsSrc = fileURLToPath(new URL("../migrations/", import.meta.url));
   if (existsSync(migrationsSrc)) {
     cpSync(migrationsSrc, join(resolve(dir), "migrations"), { recursive: true });
     console.log(`wrote: ${join(resolve(dir), "migrations")}/`);
