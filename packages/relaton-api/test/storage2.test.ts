@@ -2,6 +2,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
 import schemaSql from "../migrations/0001_init.sql?raw";
 import storageV2Sql from "../migrations/0007_storage_v2.sql?raw";
+import searchV2Sql from "../migrations/0009_documents_search.sql?raw";
+import { splitSqlStatements } from "./split-sql";
 import { getDocument, getDocumentByLookupKey } from "../src/lib/storage2";
 
 const DOC = {
@@ -38,17 +40,14 @@ function auth(init: RequestInit = {}): RequestInit {
 }
 
 async function applySchema(sql: string) {
-  const statements = sql
-    .replace(/^--.*$/gm, "")
-    .split(";")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const statements = splitSqlStatements(sql);
   await env.DB.batch(statements.map((s) => env.DB.prepare(s)));
 }
 
 beforeAll(async () => {
   await applySchema(schemaSql);
   await applySchema(storageV2Sql);
+  await applySchema(searchV2Sql);
 });
 
 async function postChunk(rows: unknown[], extra: Record<string, unknown> = {}) {

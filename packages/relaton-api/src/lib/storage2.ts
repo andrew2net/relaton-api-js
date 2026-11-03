@@ -3,6 +3,12 @@
 // of that JSON and nothing here derives lookup keys — doc_keys carries the
 // dataset-provided tokens verbatim.
 
+// Deep paths: extension-free at the module level keeps plain node (CLI,
+// harness) able to load the derivation, while the worker bundle resolves
+// the same files.
+import { deriveKeys } from "../pubid/keys.ts";
+import { parse } from "../pubid/index.ts";
+
 export interface StorageV2Doc {
   key: string;
   flavor: string;
@@ -184,6 +190,28 @@ export async function getDocumentByLookupKey(db: D1Database, key: string): Promi
   };
 }
 
+// Exact primary-docidentifier match: datasets whose doc_keys carry only
+// the undated canonical token still resolve their dated printed form
+// (ISO 19115-1:2014 names a record keyed ISO 19115-1).
+export async function getDocumentByDocid(db: D1Database, docid: string): Promise<StorageV2Doc | null> {
+  const doc = await db
+    .prepare(
+      `SELECT d.key, d.flavor, d.file, d.data, d.indexed_at
+       FROM documents_v2 AS d JOIN identifiers AS i ON i.document = d.key
+       WHERE i.raw = ?1 ORDER BY d.key LIMIT 1`,
+    )
+    .bind(docid)
+    .first<{ key: string; flavor: string; file: string; data: string; indexed_at: string }>();
+  if (!doc) return null;
+  return {
+    key: doc.key,
+    flavor: doc.flavor,
+    file: doc.file,
+    data: JSON.parse(doc.data) as Record<string, unknown>,
+    indexedAt: doc.indexed_at,
+  };
+}
+
 export interface SearchFilters {
   cursor?: string | null;
   flavor?: string | null;
@@ -269,4 +297,68 @@ export async function pageSummaries(
     .bind(...keys)
     .all<{ document: string; raw: string }>();
   return { titleOf, primaryOf: new Map(primaries.results?.map((r) => [r.document, r.raw])) };
+}
+
+// The documents_search row for one document (migration 0009): the
+// query-side projection derived mechanically from `data` — the same
+// row the ingest upserts and the backfill walk rebuilds, so both paths
+// cannot drift.
+export interface SearchRowV2 {
+  key: string;
+  flavor: string;
+  file: string;
+  docid: string | null;
+  title: string | null;
+  year: number | null;
+  doctype: string | null;
+  status: string | null;
+  abstract: string | null;
+  norm: string;
+  undated_norm: string;
+  allparts_norm: string;
+  publisher: string | null;
+  number: string | null;
+  part: string | null;
+  edition: string | null;
+}
+
+export function deriveSearchRow(key: string, flavor: string, file: string, data: Record<string, unknown>): SearchRowV2 {
+  const titles = projectTitles(data);
+  const main = titles.find((t) => t.type === "main" && (t.lang === "en" || t.lang === null))
+    ?? titles.find((t) => t.type === "main")
+    ?? titles[0];
+  const ids = projectIdentifiers(data);
+  const primary = ids.find((i) => i.isPrimary === 1) ?? ids[0];
+  const docid = primary?.raw ?? null;
+  const keys = deriveKeys(docid ?? key);
+  const dates = projectDates(data);
+  const published = dates.find((d) => d.type === "published" && d.onDate) ?? dates.find((d) => d.onDate);
+  const year = published?.onDate?.match(/^(\d{4})/)?.[1];
+  const status = scalarText((data.status as { stage?: unknown } | undefined)?.stage);
+  const abstract = scalarText(data.abstract)?.replace(/\s+/g, " ").trim().slice(0, 4000) || null;
+
+  // Pubid components of the primary identifier (the v1 ingest parsed
+  // them producer-side; here pubid-ts parses at projection time). A
+  // docid pubid cannot read keeps null components — the q path still
+  // matches it via FTS/LIKE.
+  const parsed = docid ? parse(docid) : null;
+
+  return {
+    key,
+    flavor,
+    file,
+    docid,
+    title: main?.text ?? null,
+    year: year ? Number(year) : null,
+    doctype: scalarText(data.doctype),
+    status: status ?? null,
+    abstract,
+    norm: keys.norm,
+    undated_norm: keys.undated,
+    allparts_norm: keys.allparts,
+    publisher: parsed?.publishers.length ? parsed.publishers.join("/") : null,
+    number: parsed?.number ?? null,
+    part: parsed?.part ?? null,
+    edition: scalarText(data.edition),
+  };
 }

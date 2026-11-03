@@ -2,12 +2,13 @@ import { logoUrl, publisherOf } from "../lib/publishers";
 import type { AppEnv } from "../env";
 import { layout, escapeHtml } from "./ui/chrome";
 import { renderRecordPage, RECORD_CSS } from "./ui/record";
+import * as v2 from "../lib/search2";
 
 // Browsable web UI for the lutaml cloud store. Every page is server-rendered
 // HTML served by the same routes that answer JSON to API clients — the
 // content type follows the request's Accept header, never a different URL.
 
-interface FlavorRow {
+interface FlavorRowV1 {
   flavor: string;
   doc_count: number;
   last_modified: string | null;
@@ -15,8 +16,8 @@ interface FlavorRow {
 }
 
 interface EntryRow {
-  r2_key: string;
   docid: string | null;
+  r2_key: string;
 }
 
 
@@ -73,11 +74,13 @@ export function wantsHtml(accept: string | undefined): boolean {
 
 /** Browsable list of collections. */
 export async function renderCollections(db: D1Database): Promise<string> {
-  const { results } = await db.prepare(
-    "SELECT flavor, doc_count, last_modified FROM flavors ORDER BY flavor",
-  ).all<FlavorRow>();
+  const flavors = (await v2.searchReady(db))
+    ? (await v2.listFlavors(db)).map((f) => ({ flavor: f.flavor, doc_count: f.doc_count, last_modified: f.last_modified }))
+    : ((await db.prepare(
+      "SELECT flavor, doc_count, last_modified FROM flavors ORDER BY flavor",
+    ).all<FlavorRowV1>()).results ?? []);
 
-  const rows = (results ?? [])
+  const rows = flavors
     .map((f) => {
       const updated = f.last_modified ?? "";
       const publisher = publisherOf(f.flavor);
@@ -94,7 +97,7 @@ export async function renderCollections(db: D1Database): Promise<string> {
     activeNav: "collections",
     css: CSS,
     body: `<h1>Collections</h1>
-<p class="sub">${(results ?? []).length.toLocaleString("en-US")} collections ·
+<p class="sub">${flavors.length.toLocaleString("en-US")} collections ·
 each is a lutaml data repository: <code>manifest</code> lists its records,
 <code>entries/{key}</code> serves one.</p>
 <table>
@@ -108,13 +111,19 @@ ${rows}
 
 /**
  * Entry keys mirror the repo layout (data/…). URLs may carry the bare or
- * the prefixed form — resolve both.
+ * the prefixed form — resolve both. The v2 projection stores the dataset
+ * file; its R2 blob key is derived, keeping the same address space.
  */
 export async function findEntryRow(
   db: D1Database,
   collection: string,
   key: string,
 ): Promise<EntryRow | null> {
+  if (await v2.searchReady(db)) {
+    const row = await v2.findEntryRow(db, collection, key);
+    if (!row) return null;
+    return { docid: row.docid, r2_key: v2.blobKeyOf(collection, row.file) };
+  }
   const storageKey = key.startsWith("data/") ? key : `data/${key}`;
   return db.prepare(
     "SELECT docid, r2_key FROM documents WHERE flavor = ? AND r2_key IN (?, ?)",

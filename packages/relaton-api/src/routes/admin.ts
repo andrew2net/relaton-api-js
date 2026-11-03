@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
 import {
+  deriveSearchRow,
   projectClassifications,
   projectContributors,
   projectDates,
@@ -435,6 +436,28 @@ adminRoutes.post("/admin/ingest-v2/:flavor", async (c) => {
     return out;
   }
 
+  // Multi-row upsert by a primary key; `hold` columns are written on
+  // insert but never clobbered by an update (embedded_at is the embed
+  // cursor, not a projection of data).
+  function upsertStatements(table: string, columns: string[], pk: string, hold: string[], tuples: unknown[][]): D1PreparedStatement[] {
+    if (!tuples.length) return [];
+    const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
+    const rowSql = `(${columns.map(() => "?").join(", ")})`;
+    const updateSet = columns.filter((col) => col !== pk && !hold.includes(col))
+      .map((col) => `${col} = excluded.${col}`).join(", ");
+    const out: D1PreparedStatement[] = [];
+    for (let i = 0; i < tuples.length; i += perStmt) {
+      const group = tuples.slice(i, i + perStmt);
+      out.push(
+        c.env.DB.prepare(
+          `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${group.map(() => rowSql).join(", ")}
+           ON CONFLICT (${pk}) DO UPDATE SET ${updateSet}`,
+        ).bind(...group.flat()),
+      );
+    }
+    return out;
+  }
+
   const chunkKeys = chunk.rows.map((r) => r.key);
   const stmts: D1PreparedStatement[] = [];
 
@@ -458,6 +481,22 @@ adminRoutes.post("/admin/ingest-v2/:flavor", async (c) => {
       );
     }
   }
+
+  // The query-side projection (migration 0009): derived mechanically from
+  // the same data, so the search/collections surfaces read one source of
+  // truth. FTS rows ride the table's triggers.
+  stmts.push(...upsertStatements(
+    "documents_search",
+    ["key", "flavor", "file", "docid", "title", "year", "doctype", "status", "abstract",
+      "norm", "undated_norm", "allparts_norm", "publisher", "number", "part", "edition"],
+    "key",
+    ["embedded_at"],
+    chunk.rows.map((r) => {
+      const s = deriveSearchRow(r.key, flavor, r.file, r.data);
+      return [s.key, s.flavor, s.file, s.docid, s.title, s.year, s.doctype, s.status, s.abstract,
+        s.norm, s.undated_norm, s.allparts_norm, s.publisher, s.number, s.part, s.edition];
+    }),
+  ));
 
   stmts.push(...deleteByDocuments("doc_keys", chunkKeys));
   stmts.push(...insertStatements(
@@ -517,6 +556,123 @@ adminRoutes.post("/admin/ingest-v2/:flavor", async (c) => {
   await putBlobs(c.env.BUCKET, chunk.blobs);
 
   return c.json({ ok: true, rows: chunk.rows.length, blobs: Object.keys(chunk.blobs).length });
+});
+
+// Query-projection backfill (migration 0009): walks documents_v2 in key
+// order and rebuilds documents_search rows from the stored JSON — the
+// same derivation the ingest uses, so existing production data needs no
+// re-crawl. Paged: pass ?cursor= (last key) to continue.
+adminRoutes.post("/admin/build-search", async (c) => {
+  if (!c.env.ADMIN_TOKEN || !tokenMatches(c.req.header("Authorization"), c.env.ADMIN_TOKEN)) {
+    return c.text("Forbidden.", 403);
+  }
+  const limit = Math.min(500, Number(c.req.query("limit") ?? "300") || 300);
+  const cursor = c.req.query("cursor") ?? "";
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT key, flavor, file, data FROM documents_v2 WHERE key > ?1 ORDER BY key LIMIT ?2`,
+  ).bind(cursor, limit).all<{ key: string; flavor: string; file: string; data: string }>();
+
+  const rows = (results ?? []).map((r) => {
+    let data: Record<string, unknown> = {};
+    try {
+      data = JSON.parse(r.data) as Record<string, unknown>;
+    } catch {
+      // A corrupt row is skipped, not fatal to the walk.
+    }
+    return { key: r.key, flavor: r.flavor, file: r.file, data };
+  });
+
+  const BIND_CAP = 90;
+  const columns = ["key", "flavor", "file", "docid", "title", "year", "doctype", "status", "abstract",
+    "norm", "undated_norm", "allparts_norm", "publisher", "number", "part", "edition"];
+  const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
+  const rowSql = `(${columns.map(() => "?").join(", ")})`;
+  const updateSet = columns.filter((col) => col !== "key" && col !== "embedded_at")
+    .map((col) => `${col} = excluded.${col}`).join(", ");
+  const stmts: D1PreparedStatement[] = [];
+  const tuples = rows.map((r) => {
+    const s = deriveSearchRow(r.key, r.flavor, r.file, r.data);
+    return [s.key, s.flavor, s.file, s.docid, s.title, s.year, s.doctype, s.status, s.abstract,
+      s.norm, s.undated_norm, s.allparts_norm, s.publisher, s.number, s.part, s.edition];
+  });
+  for (let i = 0; i < tuples.length; i += perStmt) {
+    stmts.push(
+      c.env.DB.prepare(
+        `INSERT INTO documents_search (${columns.join(", ")}) VALUES ${tuples.slice(i, i + perStmt).map(() => rowSql).join(", ")}
+         ON CONFLICT (key) DO UPDATE SET ${updateSet}`,
+      ).bind(...tuples.slice(i, i + perStmt).flat()),
+    );
+  }
+  try {
+    for (let i = 0; i < stmts.length; i += 90) {
+      await c.env.DB.batch(stmts.slice(i, i + 90));
+    }
+  } catch (e) {
+    console.error(`build-search batch failed at cursor ${cursor}: ${String(e)}`);
+    return c.text(`build-search failed: ${String(e)}`, 500);
+  }
+
+  const lastKey = rows.at(-1)?.key ?? cursor;
+  return c.json({
+    scanned: rows.length, lastKey,
+    nextCursor: rows.length === limit ? lastKey : null,
+  });
+});
+
+// Vector backfill for the v2 projection: embeds documents_search rows
+// (docid + title + abstract) into Vectorize keyed by the document, with
+// { key, flavor } metadata — no numeric id indirection. embedded_at is
+// the cursor, so completed flavors re-run for nothing.
+adminRoutes.post("/admin/embed-search", async (c) => {
+  if (!c.env.ADMIN_TOKEN || !tokenMatches(c.req.header("Authorization"), c.env.ADMIN_TOKEN)) {
+    return c.text("Forbidden.", 403);
+  }
+  const limit = Math.min(200, Number(c.req.query("limit") ?? "100") || 100);
+  const cursor = c.req.query("cursor") ?? "";
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT key, flavor, docid, title, abstract FROM documents_search
+     WHERE key > ?1 AND embedded_at IS NULL ORDER BY key LIMIT ?2`,
+  ).bind(cursor, limit).all<{ key: string; flavor: string; docid: string | null; title: string | null; abstract: string | null }>();
+
+  const rows = (results ?? []).filter((r) => r.title !== null || r.abstract !== null || r.docid !== null);
+  if (!(results ?? []).length) return c.json({ embedded: 0, lastKey: cursor, nextCursor: null });
+
+  const { recordText, embedTexts } = await import("../lib/semantic");
+  for (let i = 0; i < rows.length; i += 50) {
+    const batch = rows.slice(i, i + 50);
+    const embeddings = await embedTexts(c.env, batch.map((r) => recordText(r.docid, r.title, r.abstract)));
+    if (embeddings.length !== batch.length) {
+      return c.json({ error: "embedding count mismatch", expected: batch.length, got: embeddings.length }, 502);
+    }
+    const upserts = await Promise.all(batch.map(async (row, j) => {
+      const values = embeddings[j];
+      if (!values) return null;
+      // Vectorize ids cap at 44 bytes: a digest of flavor/key is
+      // collision-free and length-stable; the metadata carries the key.
+      const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(`${row.flavor}/${row.key}`));
+      const id = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+      return { id, values, metadata: { key: row.key, flavor: row.flavor } };
+    })).then((list) => list.filter((u) => u !== null));
+    await c.env.VECTORIZE.upsert(upserts);
+  }
+
+  // Stamp the page (all scanned rows, not only embedded ones, so the walk
+  // advances a full page even through gaps).
+  const stamped = (results ?? []).map((r) => r.key);
+  const now = new Date().toISOString();
+  for (let i = 0; i < stamped.length; i += 90) {
+    await c.env.DB.prepare(
+      `UPDATE documents_search SET embedded_at = ?1 WHERE key IN (${stamped.slice(i, i + 90).map(() => "?").join(", ")})`,
+    ).bind(now, ...stamped.slice(i, i + 90)).run();
+  }
+
+  const lastKey = (results ?? []).at(-1)!.key;
+  return c.json({
+    embedded: rows.length, lastKey,
+    nextCursor: (results?.length ?? 0) === limit ? lastKey : null,
+  });
 });
 
 // Storage v2 ghost cleanup: same semantics as the v1 reconcile, over the

@@ -18,9 +18,13 @@ re-ingest invalidates touched documents naturally — the key version
 moves and orphaned entries age out; there is no purge step to operate.
 `X-Relaton-Cache: hit|miss` reports the path (the Cache API does not set
 `cf-cache-status`; zone-level edge caching of worker responses stays a
-CF-console decision, TODO 10). Remaining: the Worker's /search and
-/collections pages still read the v1 tables (the storage unification
-pass).
+CF-console decision, TODO 10). The storage unification landed behind the
+readiness probe (2026-11-03): `/search`, `/collections`, and the MCP
+readers serve `documents_search` — the query projection derived at ingest
+(migration 0009) — once its tables hold rows, falling back to the v1
+tables until `/admin/build-search` backfills them; the v1 store, its
+admin routes, and the workflow v1 legs are removed by the cleanup
+migration after the fleet backfill and the v2 re-embed (embed-search).
 
 Goal: replace `/api/v1/*` entirely. RFC 9457 errors, content negotiation,
 edge caching, cursor pagination, navigable relations.

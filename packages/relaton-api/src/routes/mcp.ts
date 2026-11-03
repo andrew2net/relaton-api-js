@@ -1,5 +1,6 @@
 import { searchDocuments } from "../lib/search";
 import { findDocument } from "../lib/lookup";
+import * as v2 from "../lib/search2";
 import { fromXml, toAsciiBib, toIso690, toYaml, slugAnchor, type RelatonItem } from "relaton";
 import { renderCreatePreview, type CreatePayload } from "./create";
 import { verifyCode } from "./verify";
@@ -131,14 +132,35 @@ interface RefOptions {
   allParts?: boolean;
 }
 
-async function fetchRecordXml(env: McpEnv, code: string, opts: RefOptions = {}): Promise<string | null> {
+// Resolve a code to its stored blob. The v2 projection carries { key,
+// flavor, file } (blob key derived); the v1 store carries r2_key.
+async function findRecord(
+  env: McpEnv,
+  code: string,
+  opts: RefOptions = {},
+): Promise<{ blobKey: string } | null> {
+  if (await v2.searchReady(env.DB)) {
+    const row = await v2.findDocument(env.DB, {
+      code,
+      year: opts.year ?? null,
+      allParts: opts.allParts ?? false,
+    });
+    if (!row) return null;
+    return { blobKey: v2.blobKeyOf(row.flavor, row.file) };
+  }
   const row = await findDocument(env.DB, {
     code,
     year: opts.year ?? null,
     allParts: opts.allParts ?? false,
   });
   if (!row) return null;
-  const obj = await env.BUCKET.get(row.r2_key);
+  return { blobKey: row.r2_key };
+}
+
+async function fetchRecordXml(env: McpEnv, code: string, opts: RefOptions = {}): Promise<string | null> {
+  const record = await findRecord(env, code, opts);
+  if (!record) return null;
+  const obj = await env.BUCKET.get(record.blobKey);
   if (!obj) return null;
   return obj.text();
 }
@@ -187,7 +209,7 @@ relaton_create_record instead.`,
     const args = (params.arguments ?? {}) as Record<string, unknown>;
 
     if (name === "relaton_search") {
-      const result = await searchDocuments(env.DB, {
+      const params = {
         q: args.q as string | undefined,
         flavor: args.flavor as string | undefined,
         doctype: args.doctype as string | undefined,
@@ -196,14 +218,21 @@ relaton_create_record instead.`,
         yearTo: typeof args.yearTo === "number" ? args.yearTo : null,
         page: typeof args.page === "number" ? args.page : 0,
         size: typeof args.size === "number" ? args.size : 25,
-      });
+      };
+      const onV2 = await v2.searchReady(env.DB);
+      const result = onV2
+        ? await v2.searchDocuments(env.DB, params)
+        : await searchDocuments(env.DB, params);
       return textResult(JSON.stringify({
         total: result.total,
         items: result.items.map((d) => {
-          const key = d.r2_key.slice(d.flavor.length + 1);
+          const key = "file" in d
+            ? v2.entryKeyOf(d.file)
+            : (d as { r2_key: string }).r2_key.slice(d.flavor.length + 1).replace(/^data\//, "");
           return {
             docid: d.docid, flavor: d.flavor, year: d.year, doctype: d.doctype, status: d.status,
-            title: d.title_en, record: `https://api.relaton.org/collections/${d.flavor}/entries/${encodeURIComponent(key)}`,
+            title: "title" in d ? d.title : (d as { title_en?: string | null }).title_en,
+            record: `https://api.relaton.org/collections/${d.flavor}/entries/${encodeURIComponent(key)}`,
           };
         }),
       }, null, 2));

@@ -49,11 +49,34 @@ export async function semanticSearch(env: SemanticEnv, query: string, k: number)
   }
 }
 
+export interface SemanticHitV2 {
+  key: string;
+  flavor: string | null;
+  score: number;
+}
+
+// Vectors written by /admin/embed-search carry { key, flavor } metadata —
+// documents_search rows, no numeric id indirection.
+export async function semanticSearchV2(env: SemanticEnv, query: string, k: number): Promise<SemanticHitV2[]> {
+  try {
+    const vectors = await embedTexts(env, [query]);
+    const vector = vectors[0];
+    if (!vector) return [];
+    const found = await env.VECTORIZE.query(vector, { topK: k, returnMetadata: "all" });
+    return found.matches.flatMap((m) => {
+      const meta = m.metadata as { key?: string; flavor?: string } | undefined;
+      return meta?.key ? [{ key: meta.key, flavor: meta.flavor ?? null, score: m.score }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
 /** Reciprocal-rank fusion: blends two ranked lists without comparing
  * their raw scores (cosine and keyword relevance live on different
  * scales). k=60 is the standard damping constant. */
-export function fuseRankings<T extends { id: number }>(primary: T[], secondary: T[], k = 60): T[] {
-  const scores = new Map<number, number>();
+export function fuseRankings<T extends { id: number | string }>(primary: T[], secondary: T[], k = 60): T[] {
+  const scores = new Map<number | string, number>();
   primary.forEach((item, i) => scores.set(item.id, (scores.get(item.id) ?? 0) + 1 / (k + i + 1)));
   const seen = new Set(primary.map((i) => i.id));
   const extra: T[] = [];
