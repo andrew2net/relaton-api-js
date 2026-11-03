@@ -1,73 +1,44 @@
-name: release
+name: Release npm (@relaton/api)
 
-# Publishes a workspace package to npm through Trusted Publishing (OIDC):
-# the package's Trusted Publisher on npmjs.com names this workflow, so the
-# dispatch itself is the authorization — no npm token lives in the repo.
-# The exact version comes from the operator; the workflow never invents one.
+# Trusted publishing: keyless OIDC. Copied from parsanol/parsanol-ts
+# publish.yml (the proven pattern). Requires the owner-side registration
+# on npmjs.com — package @relaton/api → Settings → Trusted Publishing:
+#   Repository: relaton/relaton-api-js | Workflow: release.yml (no environment)
+#
+# Release procedure: bump the package version (npm version X.Y.Z in
+# packages/relaton-api), push — the v* tag publishes.
 
 on:
   workflow_dispatch:
-    inputs:
-      package:
-        description: "Workspace package to release"
-        required: true
-        type: choice
-        options:
-          - "@relaton/api"
-      next_version:
-        description: "Exact version to publish (must not already exist on npm)"
-        required: true
+  push:
+    tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+  id-token: write # the OIDC token that replaces the npm token
+
+concurrency:
+  group: release-npm
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
-          cache: npm
-          registry-url: https://registry.npmjs.org
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - name: Stamp the release version
-        run: |
-          node --eval '
-            const fs = require("node:fs");
-            const path = "packages/relaton-api/package.json";
-            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
-            manifest.version = process.argv[1];
-            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
-          ' "${{ inputs.next_version }}"
-          npm install --package-lock-only
-      - name: Publish (npm trusted publishing, OIDC)
+      - name: Publish with provenance
         working-directory: packages/relaton-api
-        env:
-          # Trusted publishing authenticates through the runner's OIDC
-          # token and is only attempted when npm has no auth token —
-          # a repo NODE_AUTH_TOKEN secret would silently switch the
-          # publish to token auth and never validate the configuration.
-          NPM_CONFIG_USERCONFIG: /tmp/tp.npmrc
         run: |
-          printf 'registry=https://registry.npmjs.org/\n' > /tmp/tp.npmrc
           # npm refuses a prerelease under the default latest tag.
-          if node -p 'require("./package.json").version.includes("-")' | grep -q true; then
-            npm publish --provenance --access public --tag next
-          else
-            npm publish --provenance --access public --tag latest
-          fi
-      - name: Commit and tag the release
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add packages/relaton-api/package.json package-lock.json
-          git diff --cached --quiet && (echo "nothing to commit"; exit 1)
-          git commit -m "Release @relaton/api ${{ inputs.next_version }}"
-          git tag "relaton-api-v${{ inputs.next_version }}"
-          git push origin HEAD:"main"
-          git push origin "relaton-api-v${{ inputs.next_version }}"
+          VERSION=$(node -p 'require("./package.json").version')
+          if [[ "$VERSION" == *-* ]]; then TAG=next; else TAG=latest; fi
+          npm publish --access public --provenance --tag "$TAG"
+        env:
+          NODE_AUTH_TOKEN: "" # explicit: trusted publishing only, no token
