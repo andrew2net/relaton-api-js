@@ -1,7 +1,7 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { dump as dumpYaml } from "js-yaml";
 import type { AppEnv } from "../env";
-import { getDocument, getDocumentByLookupKey, pageSummaries, searchDocumentPages, type StorageV2Doc } from "../lib/storage2";
+import { getDocument, getDocumentByDocid, getDocumentByLookupKey, pageSummaries, searchDocumentPages, type StorageV2Doc } from "../lib/storage2";
 // Deep path: self-contained and extension-free, loadable under plain node
 // as well as the bundler (same import discipline produce.ts uses).
 import { normKey } from "../pubid/keys.ts";
@@ -137,7 +137,8 @@ v3Routes.openapi(keyRoute, async (c) => {
   const keyText = decodeURIComponent(key);
   const doc = (await getDocument(c.env.DB, keyText))
     ?? (await getDocumentByLookupKey(c.env.DB, normKey(keyText)))
-    ?? (await getDocumentByLookupKey(c.env.DB, normKey(keyText).replace(/-/g, "")));
+    ?? (await getDocumentByLookupKey(c.env.DB, normKey(keyText).replace(/-/g, "")))
+    ?? (await getDocumentByDocid(c.env.DB, keyText));
   if (!doc) return problem(c, 404, "Not Found", `unknown key ${keyText}`);
 
   const type = negotiate(c.req.header("Accept"), format);

@@ -1,6 +1,7 @@
 import { logoUrl } from "../lib/publishers";
 import type { AppEnv } from "../env";
 import { layout, escapeHtml } from "./ui/chrome";
+import * as v2 from "../lib/search2";
 
 interface FlavorRow {
   flavor: string;
@@ -54,17 +55,19 @@ const CSS = `
 `;
 
 export async function renderHome(db: D1Database, version: string, name = "Relaton API"): Promise<string> {
-  const { results } = await db
-    .prepare(
-      `SELECT d.flavor, COUNT(*) AS doc_count, MAX(f.ingested_at) AS ingested_at
-       FROM documents AS d LEFT JOIN flavors AS f ON f.flavor = d.flavor
-       GROUP BY d.flavor ORDER BY doc_count DESC`,
-    )
-    .all<FlavorRow>();
-  const flavors = results ?? [];
+  const flavors = (await v2.searchReady(db))
+    ? (await v2.homeFlavors(db)).map((f) => ({ flavor: f.flavor, doc_count: f.doc_count, ingested_at: f.indexed_at ?? "" }))
+    : ((await db
+      .prepare(
+        `SELECT d.flavor, COUNT(*) AS doc_count, MAX(f.ingested_at) AS ingested_at
+         FROM documents AS d LEFT JOIN flavors AS f ON f.flavor = d.flavor
+         GROUP BY d.flavor ORDER BY doc_count DESC`,
+      )
+      .all<FlavorRow>()).results ?? []);
   const total = flavors.reduce((n, f) => n + f.doc_count, 0);
   const lastIngest = flavors
     .map((f) => f.ingested_at)
+    .filter(Boolean)
     .sort()
     .pop();
 

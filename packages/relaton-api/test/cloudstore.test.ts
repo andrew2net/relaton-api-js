@@ -23,14 +23,17 @@ function makeEnv(opts: {
         first: async () => {
           if (/COUNT\(\*\) AS n/.test(sql)) return { n: opts.docids.length };
           if (sql.includes("FROM flavors")) return opts.flavor;
-          if (sql.includes("FROM documents")) return opts.entry;
+          // The v1 tables only: the documents_search probe must fall
+          // through (these fakes model a store whose v2 backfill has not
+          // run, exercising the legacy path).
+          if (/FROM documents\b(?!_search)/.test(sql)) return opts.entry;
           return null;
         },
         all: async () => {
           if (/AS value, COUNT\(\*\) AS count/.test(sql)) {
             return { results: [{ value: "standard", count: opts.docids.length }] };
           }
-          if (sql.includes("FROM documents")) {
+          if (/FROM documents\b(?!_search)/.test(sql)) {
             return {
               results: opts.docids.map((docid) => ({
                 flavor: "ietf",

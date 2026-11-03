@@ -2,6 +2,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { SELF, env } from "cloudflare:test";
 import schemaSql from "../migrations/0001_init.sql?raw";
 import storageV2Sql from "../migrations/0007_storage_v2.sql?raw";
+import searchV2Sql from "../migrations/0009_documents_search.sql?raw";
+import { splitSqlStatements } from "./split-sql";
 
 // API v3 (TODO.api/03) over storage v2: seeded through the ingest-v2 admin
 // route, then served by the routes under test.
@@ -46,8 +48,8 @@ async function seed() {
 }
 
 beforeAll(async () => {
-  for (const sql of [schemaSql, storageV2Sql]) {
-    const statements = sql.replace(/^--.*$/gm, "").split(";").map((s) => s.trim()).filter(Boolean);
+  for (const sql of [schemaSql, storageV2Sql, searchV2Sql]) {
+    const statements = splitSqlStatements(sql);
     await env.DB.batch(statements.map((s) => env.DB.prepare(s)));
   }
   await seed();

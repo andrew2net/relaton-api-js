@@ -2,7 +2,8 @@ import { logoUrl } from "../lib/publishers";
 import type { AppEnv } from "../env";
 import { layout, escapeHtml } from "./ui/chrome";
 import { STATUS_WORDS } from "./ui/record";
-import { hybridSearch, type SearchParams, type SearchResult } from "../lib/search";
+import { hybridSearch as legacyHybridSearch, type SearchParams, type SearchResult } from "../lib/search";
+import * as v2 from "../lib/search2";
 
 // Global pubid/keyword search across every flavor, with facets, sorting,
 // and pagination. Server-rendered; the API surface is the /v3/documents
@@ -145,8 +146,46 @@ function renderFacet(
   return `<div class="facet-card"><h3>${dimension}</h3>${links}</div>`;
 }
 
-function renderResults(r: SearchResult, collection: string | undefined, query: string): string {
-  if (r.items.length === 0) {
+interface RenderItem {
+  docid: string | null;
+  flavor: string;
+  entryKey: string;
+  title: string | null;
+  year: number | null;
+  doctype: string | null;
+  status: string | null;
+}
+
+// The two engines carry different field names (title/title_en, file/r2_key);
+// the renderer consumes one normalized shape.
+type AnyHit = {
+  docid: string | null;
+  flavor: string;
+  year: number | null;
+  doctype: string | null;
+  status: string | null;
+  file?: string;
+  title?: string | null;
+  r2_key?: string;
+  title_en?: string | null;
+};
+
+function renderItemsOf(items: AnyHit[]): RenderItem[] {
+  return items.map((d) => ({
+    docid: d.docid,
+    flavor: d.flavor,
+    entryKey: d.file !== undefined
+      ? v2.entryKeyOf(d.file)
+      : d.r2_key!.slice(d.flavor.length + 1).replace(/^data\//, ""),
+    title: d.title ?? d.title_en ?? null,
+    year: d.year,
+    doctype: d.doctype,
+    status: d.status,
+  }));
+}
+
+function renderResults(items: RenderItem[], collection: string | undefined, query: string): string {
+  if (items.length === 0) {
     const where = collection ? ` in ${escapeHtml(collection)}` : "";
     return `<div class="empty-state">
       <p class="empty-title">No records match${where}.</p>
@@ -156,9 +195,8 @@ function renderResults(r: SearchResult, collection: string | undefined, query: s
         : `browse the <a href="/collections">collections</a>.`}</p>
     </div>`;
   }
-  return r.items.map((d) => {
-    const key = d.r2_key.slice(d.flavor.length + 1);
-    const href = `/collections/${escapeHtml(d.flavor)}/entries/${encodeURIComponent(key.replace(/^data\//, ""))}`;
+  return items.map((d) => {
+    const href = `/collections/${escapeHtml(d.flavor)}/entries/${encodeURIComponent(d.entryKey)}`;
     // Status vocabularies are publisher-specific; translate the opaque
     // codes, pass everything else through verbatim.
     const statusWord = d.status ? (STATUS_WORDS[d.status] ?? d.status) : "";
@@ -171,10 +209,10 @@ function renderResults(r: SearchResult, collection: string | undefined, query: s
     return `<div class="result">
       <div class="result-head">
         ${logoUrl(d.flavor) ? `<img class="result-logo" src="${logoUrl(d.flavor)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
-        <a class="result-docid" href="${href}">${escapeHtml(d.docid ?? key)}</a>
+        <a class="result-docid" href="${href}">${escapeHtml(d.docid ?? d.entryKey)}</a>
         ${chips}
       </div>
-      ${d.title_en ? `<p class="result-title">${escapeHtml(d.title_en)}</p>` : ""}
+      ${d.title ? `<p class="result-title">${escapeHtml(d.title)}</p>` : ""}
     </div>`;
   }).join("");
 }
@@ -201,7 +239,12 @@ export async function renderSearchPage(
   opts: SearchPageOptions = {},
 ): Promise<string> {
   const params = parseParams(url);
-  const result = await hybridSearch(db, env, params, { scopeFlavor: opts.scopeFlavor });
+  // The v2 projection (migration 0009) is the engine once its backfill
+  // has filled the tables; until then the v1 store keeps serving.
+  const result = (await v2.searchReady(db))
+    ? await v2.hybridSearch(db, env as never, params as v2.SearchParamsV2, { scopeFlavor: opts.scopeFlavor })
+    : await legacyHybridSearch(db, env, params, { scopeFlavor: opts.scopeFlavor });
+  const items = renderItemsOf(result.items as unknown as AnyHit[]);
   const qs = new URLSearchParams(url.searchParams);
   qs.delete("page");
 
@@ -259,8 +302,8 @@ ${scopeMeta}
   </aside>
   <div>
     <p class="results-info">${result.total.toLocaleString("en-US")} documents</p>
-    ${renderResults(result, opts.scopeFlavor, params.q ?? "")}
-    ${renderPager(result, qs)}
+    ${renderResults(items, opts.scopeFlavor, params.q ?? "")}
+    ${renderPager(result as SearchResult, qs)}
   </div>
 </div>`;
 

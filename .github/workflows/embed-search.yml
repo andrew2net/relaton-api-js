@@ -1,0 +1,29 @@
+name: embed-search
+
+# Builds the v2 semantic index: embeds documents_search rows (identifier +
+# title + abstract) into Vectorize keyed by { key, flavor } metadata.
+# Hours-long run; resumable by cursor and by the embedded_at column, safe
+# to re-run (vectors upsert by digest id).
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Records per page (default 100)"
+        required: false
+        default: "100"
+
+permissions:
+  contents: read
+
+jobs:
+  embed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the v2 embedding walk
+        env:
+          ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
+          LIMIT: ${{ github.event.inputs.limit || '100' }}
+        run: tools/embed_search.sh
