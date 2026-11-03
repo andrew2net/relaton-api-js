@@ -1,15 +1,19 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { dump as dumpYaml } from "js-yaml";
 import type { AppEnv } from "../env";
-import { getDocument, getDocumentByLookupKey, pageSummaries, searchDocumentPages } from "../lib/storage2";
+import { getDocument, getDocumentByLookupKey, pageSummaries, searchDocumentPages, type StorageV2Doc } from "../lib/storage2";
 // Deep path: self-contained and extension-free, loadable under plain node
 // as well as the bundler (same import discipline produce.ts uses).
 import { normKey } from "pubid-ts/src/keys.ts";
 
 // API v3 (TODO.api/03): the modern surface over the storage v2 loader —
 // content negotiation, RFC 9457 problem+json errors, strong ETags with
-// immutable edge caching, cursor pagination with Link headers. The v1
-// routes stay until the cutover.
+// immutable caching, cursor pagination with Link headers. The document
+// route caches whole responses in the Workers edge cache (caches.default)
+// under a version-stamped key — the row's indexed_at is the key version,
+// so a re-ingest that touches a document serves a fresh entry while every
+// untouched document keeps its cache hit. No purge step exists: orphaned
+// entries simply age out.
 //
 // R2 blob convention: the same key the v1 ingest wrote —
 // `<flavor>/<file without .yaml>` holding bibdata XML.
@@ -137,6 +141,40 @@ v3Routes.openapi(keyRoute, async (c) => {
   if (!doc) return problem(c, 404, "Not Found", `unknown key ${keyText}`);
 
   const type = negotiate(c.req.header("Accept"), format);
+
+  // Edge cache (TODO.api/03): keyed on the resolved canonical key, the
+  // row's indexed_at (the key version) and the negotiated representation —
+  // query-string spellings of the same document share one entry. A cache
+  // hit skips the R2 read, the YAML serialization and the ETag hashing.
+  // caches.default is a Cloudflare extension absent from the DOM lib types
+  // (same cast as the cloud store entry pages).
+  const edge = (caches as unknown as { default: Cache }).default;
+  const cacheKeyOf = (doc_: StorageV2Doc, type_: string): Request => {
+    // Canonical path, not the request's: every spelling of the key that
+    // resolves to this document shares one entry.
+    const url = new URL(c.req.url);
+    url.pathname = `/v3/documents/${encodeURIComponent(doc_.key)}`;
+    url.search = "";
+    url.searchParams.set("v", doc_.indexedAt);
+    url.searchParams.set("f", type_);
+    return new Request(url.toString(), { method: "GET" });
+  };
+
+  if (c.req.method === "GET" || c.req.method === "HEAD") {
+    try {
+      const hit = await edge.match(cacheKeyOf(doc, type));
+      if (hit) {
+        const etag = hit.headers.get("ETag")!;
+        const caching = { ETag: etag, "Cache-Control": IMMUTABLE, "X-Relaton-Cache": "hit" };
+        if (ifNoneMatchSatisfied(c.req.header("If-None-Match"), etag)) return c.body(null, 304, caching);
+        if (c.req.method === "HEAD") return c.body(null, 200, caching);
+        const served = new Response(hit.body, hit);
+        served.headers.set("X-Relaton-Cache", "hit");
+        return served;
+      }
+    } catch { /* cache unavailable in this runtime — build normally */ }
+  }
+
   let body: string;
   if (type === XML_TYPE) {
     const obj = await c.env.BUCKET.get(blobKeyOf(doc.flavor, doc.file));
@@ -151,12 +189,26 @@ v3Routes.openapi(keyRoute, async (c) => {
   }
 
   const etag = await etagOf(body);
-  const caching = { ETag: etag, "Cache-Control": IMMUTABLE };
+  const caching = { ETag: etag, "Cache-Control": IMMUTABLE, "X-Relaton-Cache": "miss" };
   if (ifNoneMatchSatisfied(c.req.header("If-None-Match"), etag)) {
     return c.body(null, 304, caching);
   }
-  if (c.req.method === "HEAD") return c.body(null, 200, caching);
-  return c.body(body, 200, { "Content-Type": type, ...caching });
+  if (c.req.method === "HEAD") {
+    // Cache the body-ful entry so later GETs and HEADs hit; answer headers only.
+    try {
+      c.executionCtx.waitUntil(edge.put(cacheKeyOf(doc, type), new Response(body, {
+        headers: { "Content-Type": type, ETag: etag, "Cache-Control": IMMUTABLE },
+      })));
+    } catch { /* no execution context — skip caching */ }
+    return c.body(null, 200, caching);
+  }
+  const served = c.body(body, 200, { "Content-Type": type, ...caching });
+  try {
+    c.executionCtx.waitUntil(edge.put(cacheKeyOf(doc, type), new Response(body, {
+      headers: served.headers,
+    })));
+  } catch { /* no execution context — skip caching */ }
+  return served;
 });
 
 v3Routes.openapi(collectionRoute, async (c) => {
