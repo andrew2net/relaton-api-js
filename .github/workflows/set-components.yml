@@ -1,0 +1,29 @@
+name: set-components
+
+# Fills the pubid component columns (publisher / number / part) of
+# documents_search by running the @pubid/pubid grammar engine under
+# node — the engine needs a real filesystem, so this walk cannot live
+# in the worker. Re-run after any build-search rebuild (the projection
+# holds the columns, so rebuilds never wipe them).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  components:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Run the component walk
+        env:
+          ADMIN_TOKEN: ${{ secrets.CLOUDFLARE_ADMIN_TOKEN }}
+        run: node tools/set_components.mjs

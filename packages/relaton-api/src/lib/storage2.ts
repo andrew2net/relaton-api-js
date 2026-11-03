@@ -7,7 +7,6 @@
 // harness) able to load the derivation, while the worker bundle resolves
 // the same files.
 import { deriveKeys } from "../pubid/keys.ts";
-import { parse } from "../pubid/index.ts";
 
 export interface StorageV2Doc {
   key: string;
@@ -337,12 +336,10 @@ export function deriveSearchRow(key: string, flavor: string, file: string, data:
   const status = scalarText((data.status as { stage?: unknown } | undefined)?.stage);
   const abstract = scalarText(data.abstract)?.replace(/\s+/g, " ").trim().slice(0, 4000) || null;
 
-  // Pubid components of the primary identifier (the v1 ingest parsed
-  // them producer-side; here pubid-ts parses at projection time). A
-  // docid pubid cannot read keeps null components — the q path still
-  // matches it via FTS/LIKE.
-  const parsed = docid ? parse(docid) : null;
-
+  // Pubid components (publisher/number/part) are filled by the engine
+  // backfill — tools/set_components.mjs runs the @pubid/pubid grammar,
+  // which needs a real filesystem and cannot load in the worker. The
+  // projection only writes what it derives from `data` itself.
   return {
     key,
     flavor,
@@ -356,9 +353,9 @@ export function deriveSearchRow(key: string, flavor: string, file: string, data:
     norm: keys.norm,
     undated_norm: keys.undated,
     allparts_norm: keys.allparts,
-    publisher: parsed?.publishers.length ? parsed.publishers.join("/") : null,
-    number: parsed?.number ?? null,
-    part: parsed?.part ?? null,
+    publisher: null,
+    number: null,
+    part: null,
     edition: scalarText(data.edition),
   };
 }
