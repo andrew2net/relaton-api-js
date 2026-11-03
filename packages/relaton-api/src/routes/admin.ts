@@ -490,7 +490,7 @@ adminRoutes.post("/admin/ingest-v2/:flavor", async (c) => {
     ["key", "flavor", "file", "docid", "title", "year", "doctype", "status", "abstract",
       "norm", "undated_norm", "allparts_norm", "publisher", "number", "part", "edition"],
     "key",
-    ["embedded_at"],
+    ["embedded_at", "publisher", "number", "part"],
     chunk.rows.map((r) => {
       const s = deriveSearchRow(r.key, flavor, r.file, r.data);
       return [s.key, s.flavor, s.file, s.docid, s.title, s.year, s.doctype, s.status, s.abstract,
@@ -588,7 +588,7 @@ adminRoutes.post("/admin/build-search", async (c) => {
     "norm", "undated_norm", "allparts_norm", "publisher", "number", "part", "edition"];
   const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
   const rowSql = `(${columns.map(() => "?").join(", ")})`;
-  const updateSet = columns.filter((col) => col !== "key" && col !== "embedded_at")
+  const updateSet = columns.filter((col) => col !== "key" && col !== "embedded_at" && col !== "publisher" && col !== "number" && col !== "part")
     .map((col) => `${col} = excluded.${col}`).join(", ");
   const stmts: D1PreparedStatement[] = [];
   const tuples = rows.map((r) => {
@@ -673,6 +673,73 @@ adminRoutes.post("/admin/embed-search", async (c) => {
     embedded: rows.length, lastKey,
     nextCursor: (results?.length ?? 0) === limit ? lastKey : null,
   });
+});
+
+// Paged walk over documents_search for node-side tooling: the pubid
+// component backfill runs the @pubid/pubid grammar engine, which needs
+// a real filesystem and cannot load inside the worker.
+adminRoutes.get("/admin/page-search", async (c) => {
+  if (!c.env.ADMIN_TOKEN || !tokenMatches(c.req.header("Authorization"), c.env.ADMIN_TOKEN)) {
+    return c.text("Forbidden.", 403);
+  }
+  const limit = Math.min(1000, Number(c.req.query("limit") ?? "500") || 500);
+  const cursor = c.req.query("cursor") ?? "";
+  const { results } = await c.env.DB.prepare(
+    `SELECT key, docid FROM documents_search WHERE key > ?1 ORDER BY key LIMIT ?2`,
+  ).bind(cursor, limit).all<{ key: string; docid: string | null }>();
+  const lastKey = (results ?? []).at(-1)?.key ?? cursor;
+  return c.json({
+    scanned: results?.length ?? 0,
+    rows: results ?? [],
+    nextCursor: (results?.length ?? 0) === limit ? lastKey : null,
+  });
+});
+
+interface ComponentUpdate {
+  key: string;
+  publisher: string | null;
+  number: string | null;
+  part: string | null;
+}
+
+// Component updates from the engine backfill. Batched as CASE statements
+// (~9 binds per row), so a page of 500 rows is ~56 statements. Columns
+// are held by the projection upserts, so only this route writes them.
+adminRoutes.post("/admin/set-components", async (c) => {
+  if (!c.env.ADMIN_TOKEN || !tokenMatches(c.req.header("Authorization"), c.env.ADMIN_TOKEN)) {
+    return c.text("Forbidden.", 403);
+  }
+  const body = await c.req.json<{ components?: ComponentUpdate[] }>().catch(() => null);
+  if (!body?.components?.length) return c.text("Expected { components: [{ key, publisher, number, part }] }.", 400);
+
+  const rows = body.components.filter((r) => typeof r.key === "string" && r.key.length > 0);
+  const stmts: D1PreparedStatement[] = [];
+  const PER_STMT = 10;
+  for (let i = 0; i < rows.length; i += PER_STMT) {
+    const group = rows.slice(i, i + PER_STMT);
+    const cases = ["publisher", "number", "part"].map((col) => {
+      const branches = group.map(() => `WHEN ? THEN ?`).join(" ");
+      return `${col} = CASE key ${branches} END`;
+    }).join(", ");
+    const binds: unknown[] = [];
+    for (const col of ["publisher", "number", "part"] as const) {
+      for (const r of group) binds.push(r.key, r[col] ?? null);
+    }
+    stmts.push(
+      c.env.DB.prepare(
+        `UPDATE documents_search SET ${cases} WHERE key IN (${group.map(() => "?").join(", ")})`,
+      ).bind(...binds, ...group.map((r) => r.key)),
+    );
+  }
+  try {
+    for (let i = 0; i < stmts.length; i += 90) {
+      await c.env.DB.batch(stmts.slice(i, i + 90));
+    }
+  } catch (e) {
+    console.error(`set-components batch failed: ${String(e)}`);
+    return c.text(`set-components failed: ${String(e)}`, 500);
+  }
+  return c.json({ ok: true, updated: rows.length });
 });
 
 // Storage v2 ghost cleanup: same semantics as the v1 reconcile, over the

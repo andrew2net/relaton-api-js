@@ -95,11 +95,11 @@ describe("search over documents_search", () => {
     expect(html).toContain("/collections/iso/entries/iso-19115-2");
   });
 
-  it("filters by pubid components", async () => {
-    const res = await SELF.fetch("http://localhost/search?publisher=ISO&number=19115");
+  it("filters by title keyword within the flavor scope", async () => {
+    const res = await SELF.fetch("http://localhost/search?q=Fundamentals&flavor=iso");
     const html = await res.text();
-    expect(html).toContain("entries/iso-19115");
-    expect((html.match(/entries\/iso-19115/g) ?? []).length).toBe(3);
+    expect(html).toContain("entries/iso-19115-1");
+    expect(html).not.toContain("entries/iso-19115-2");
   });
 });
 
@@ -177,6 +177,40 @@ describe("admin build-search backfill", () => {
     const res = await SELF.fetch("http://localhost/search?q=Metadata");
     const html = await res.text();
     expect(html).toContain("entries/iso-19115-1");
+  });
+});
+
+describe("component columns", () => {
+  it("take engine-fed updates through set-components and serve the filters", async () => {
+    // Components come from the node-side @pubid/pubid engine walk
+    // (tools/set_components.mjs); the route stores them and the
+    // projection rebuilds hold them.
+    const res = await SELF.fetch("http://localhost/admin/set-components", auth({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        components: [
+          { key: "ISO 19115", publisher: "ISO", number: "19115", part: null },
+          { key: "ISO 19115-1", publisher: "ISO", number: "19115", part: "1" },
+          { key: "ISO 19115-2", publisher: "ISO", number: "19115", part: "2" },
+        ],
+      }),
+    }));
+    expect(res.status).toBe(200);
+
+    const page = await SELF.fetch("http://localhost/search?publisher=ISO&number=19115");
+    const html = await page.text();
+    expect(html).toContain("entries/iso-19115");
+    expect((html.match(/entries\/iso-19115/g) ?? []).length).toBe(3);
+  });
+
+  it("survive a build-search rebuild (held columns)", async () => {
+    const res = await SELF.fetch("http://localhost/admin/build-search?limit=10", auth({ method: "POST" }));
+    expect(res.status).toBe(200);
+
+    const page = await SELF.fetch("http://localhost/search?publisher=ISO&number=19115");
+    const html = await page.text();
+    expect((html.match(/entries\/iso-19115/g) ?? []).length).toBe(3);
   });
 });
 

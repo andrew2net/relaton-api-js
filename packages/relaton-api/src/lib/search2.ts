@@ -108,7 +108,9 @@ function buildWhere(
   if (p.doctype) push("doctype = ?", p.doctype);
   if (p.status) push("status = ?", p.status);
   if (p.publisher) push("publisher = ? COLLATE NOCASE", p.publisher);
-  if (p.number) push("number = ? COLLATE NOCASE", p.number);
+  // Prefix, not equality: dataset numbers carry their edition suffixes
+  // ("802.3-2022"), and a user-typed "802.3" should hit every edition.
+  if (p.number) push("number LIKE ?", `${p.number}%`);
   if (p.part) push("part = ? COLLATE NOCASE", p.part);
   if (p.edition) push("edition = ? COLLATE NOCASE", p.edition);
   if (p.yearFrom != null) push("year >= ?", p.yearFrom);
