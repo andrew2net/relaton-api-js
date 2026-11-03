@@ -13,6 +13,7 @@ import { grammarImplementation } from "@pubid/pubid/dist/flavors/index.js";
 
 const BASE_URL = process.env.BASE_URL ?? "https://api.relaton.org";
 const PAGE = Number(process.env.PAGE ?? 500);
+const FLAVOR = process.env.FLAVOR ?? ""; // scope the walk (e.g. FLAVOR=iho after a grammar release)
 const TOKEN = process.env.ADMIN_TOKEN;
 if (!TOKEN) {
   console.error("set ADMIN_TOKEN");
@@ -72,8 +73,12 @@ function componentsOf(docid) {
 }
 
 async function pageSearch(cursor) {
-  const url = `${BASE_URL}/admin/page-search?limit=${PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${TOKEN}` } });
+  const params = new URLSearchParams({ limit: String(PAGE) });
+  if (cursor) params.set("cursor", cursor);
+  if (FLAVOR) params.set("flavor", FLAVOR);
+  const res = await fetch(`${BASE_URL}/admin/page-search?${params}`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  });
   if (!res.ok) throw new Error(`page-search ${res.status}: ${await res.text()}`);
   return res.json();
 }

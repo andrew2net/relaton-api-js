@@ -3,6 +3,7 @@ import { SELF, env } from "cloudflare:test";
 import schemaSql from "../migrations/0001_init.sql?raw";
 import storageV2Sql from "../migrations/0007_storage_v2.sql?raw";
 import searchV2Sql from "../migrations/0009_documents_search.sql?raw";
+import dropV1Sql from "../migrations/0010_drop_v1_tables.sql?raw";
 import { splitSqlStatements } from "./split-sql";
 
 // The model-faithful GraphQL schema (TODO.api/04) over storage v2.
@@ -57,7 +58,7 @@ async function gql(query: string, variables?: Record<string, unknown>) {
 }
 
 beforeAll(async () => {
-  for (const sql of [schemaSql, storageV2Sql, searchV2Sql]) {
+  for (const sql of [schemaSql, storageV2Sql, searchV2Sql, dropV1Sql]) {
     const statements = splitSqlStatements(sql);
     await env.DB.batch(statements.map((s) => env.DB.prepare(s)));
   }

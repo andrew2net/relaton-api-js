@@ -16,18 +16,6 @@ import * as v2 from "../lib/search2";
 // docidentifiers, exactly as listed in the manifest — clients never guess a
 // mapping between the listing and the fetch paths.
 
-interface FlavorRow {
-  flavor: string;
-  doc_count: number;
-  last_modified: string | null;
-  ingested_at: string;
-}
-
-interface EntryRow {
-  docid: string | null;
-  r2_key: string;
-}
-
 const collectionsRoute = createRoute({
   method: "get",
   path: "/collections",
@@ -92,10 +80,8 @@ cloudStoreRoutes.openapi(collectionsRoute, async (c) => {
     });
   }
 
-  const collections = (await v2.searchReady(c.env.DB))
-    ? (await v2.listFlavors(c.env.DB)).map((f) => ({ name: f.flavor, count: f.doc_count }))
-    : ((await c.env.DB.prepare("SELECT flavor, doc_count FROM flavors ORDER BY flavor")
-      .all<FlavorRow>()).results ?? []).map((f) => ({ name: f.flavor, count: f.doc_count }));
+  const collections = (await v2.listFlavors(c.env.DB))
+    .map((f) => ({ name: f.flavor, count: f.doc_count }));
 
   return c.json({ collections });
 });
@@ -150,10 +136,7 @@ for (const exportFormat of Object.keys(EXPORT_FORMATS)) {
 // Browsable collection page: the shared search engine scoped to one flavor.
 cloudStoreRoutes.get("/collections/:collection", async (c) => {
   const collection = c.req.param("collection");
-  const onV2 = await v2.searchReady(c.env.DB);
-  const flavor = onV2
-    ? (await v2.listFlavors(c.env.DB)).some((f) => f.flavor === collection)
-    : Boolean(await c.env.DB.prepare("SELECT flavor FROM flavors WHERE flavor = ?").bind(collection).first());
+  const flavor = (await v2.listFlavors(c.env.DB)).some((f) => f.flavor === collection);
   if (!flavor) {
     if (wantsHtml(c.req.header("Accept"))) {
       return c.html(renderNotFound({
@@ -179,37 +162,15 @@ cloudStoreRoutes.get("/collections/:collection", async (c) => {
 
 cloudStoreRoutes.openapi(manifestRoute, async (c) => {
   const collection = c.req.param("collection");
-  const onV2 = await v2.searchReady(c.env.DB);
 
-  interface FlavorMeta { doc_count: number; last_modified: string | null; stamp: string }
-  let meta: FlavorMeta;
-  let entries: { key: string; docid: string | null }[];
-  if (onV2) {
-    const flavor = (await v2.listFlavors(c.env.DB)).find((f) => f.flavor === collection);
-    if (!flavor) return c.text(`unknown collection: ${collection}`, 404);
-    meta = { doc_count: flavor.doc_count, last_modified: flavor.last_modified, stamp: flavor.indexed_at };
-    const { results } = await c.env.DB.prepare(
-      "SELECT file, docid FROM documents_search WHERE flavor = ? ORDER BY file",
-    ).bind(collection).all<{ file: string; docid: string | null }>();
-    entries = (results ?? []).map((d) => ({ key: v2.entryKeyOf(d.file), docid: d.docid }));
-  } else {
-    const flavor = await c.env.DB.prepare(
-      "SELECT flavor, doc_count, last_modified, ingested_at FROM flavors WHERE flavor = ?",
-    ).bind(collection).first<FlavorRow>();
-    if (!flavor) {
-      return c.text(`unknown collection: ${collection}`, 404);
-    }
-    meta = { doc_count: flavor.doc_count, last_modified: flavor.last_modified, stamp: flavor.ingested_at };
-    const { results } = await c.env.DB.prepare(
-      "SELECT r2_key, docid FROM documents WHERE flavor = ? ORDER BY r2_key",
-    ).bind(collection).all<EntryRow>();
-    entries = (results ?? []).map((d) => ({
-      key: d.r2_key.slice(collection.length + 1).replace(/^data\//, ""),
-      docid: d.docid,
-    }));
-  }
+  const flavor = (await v2.listFlavors(c.env.DB)).find((f) => f.flavor === collection);
+  if (!flavor) return c.text(`unknown collection: ${collection}`, 404);
+  const { results } = await c.env.DB.prepare(
+    "SELECT file, docid FROM documents_search WHERE flavor = ? ORDER BY file",
+  ).bind(collection).all<{ file: string; docid: string | null }>();
+  const entries = (results ?? []).map((d) => ({ key: v2.entryKeyOf(d.file), docid: d.docid }));
 
-  const generated = meta.last_modified ?? meta.stamp;
+  const generated = flavor.last_modified ?? flavor.indexed_at;
   const manifest = {
     version: 1,
     generated,

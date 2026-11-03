@@ -3,6 +3,7 @@ import { SELF, env } from "cloudflare:test";
 import schemaSql from "../migrations/0001_init.sql?raw";
 import storageV2Sql from "../migrations/0007_storage_v2.sql?raw";
 import searchV2Sql from "../migrations/0009_documents_search.sql?raw";
+import dropV1Sql from "../migrations/0010_drop_v1_tables.sql?raw";
 import { splitSqlStatements } from "./split-sql";
 
 // Storage unification (TODO.api/03 remaining): the search, collections,
@@ -71,7 +72,7 @@ async function seed() {
 }
 
 beforeAll(async () => {
-  for (const sql of [schemaSql, storageV2Sql, searchV2Sql]) {
+  for (const sql of [schemaSql, storageV2Sql, searchV2Sql, dropV1Sql]) {
     await env.DB.batch(splitSqlStatements(sql).map((s) => env.DB.prepare(s)));
   }
   await seed();

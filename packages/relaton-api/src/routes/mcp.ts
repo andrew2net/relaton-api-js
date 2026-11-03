@@ -1,5 +1,3 @@
-import { searchDocuments } from "../lib/search";
-import { findDocument } from "../lib/lookup";
 import * as v2 from "../lib/search2";
 import { fromXml, toAsciiBib, toIso690, toYaml, slugAnchor, type RelatonItem } from "relaton";
 import { renderCreatePreview, type CreatePayload } from "./create";
@@ -132,29 +130,20 @@ interface RefOptions {
   allParts?: boolean;
 }
 
-// Resolve a code to its stored blob. The v2 projection carries { key,
-// flavor, file } (blob key derived); the v1 store carries r2_key.
+// Resolve a code to its stored blob: the projection carries { key,
+// flavor, file } and the blob key is derived from the dataset path.
 async function findRecord(
   env: McpEnv,
   code: string,
   opts: RefOptions = {},
 ): Promise<{ blobKey: string } | null> {
-  if (await v2.searchReady(env.DB)) {
-    const row = await v2.findDocument(env.DB, {
-      code,
-      year: opts.year ?? null,
-      allParts: opts.allParts ?? false,
-    });
-    if (!row) return null;
-    return { blobKey: v2.blobKeyOf(row.flavor, row.file) };
-  }
-  const row = await findDocument(env.DB, {
+  const row = await v2.findDocument(env.DB, {
     code,
     year: opts.year ?? null,
     allParts: opts.allParts ?? false,
   });
   if (!row) return null;
-  return { blobKey: row.r2_key };
+  return { blobKey: v2.blobKeyOf(row.flavor, row.file) };
 }
 
 async function fetchRecordXml(env: McpEnv, code: string, opts: RefOptions = {}): Promise<string | null> {
@@ -219,22 +208,14 @@ relaton_create_record instead.`,
         page: typeof args.page === "number" ? args.page : 0,
         size: typeof args.size === "number" ? args.size : 25,
       };
-      const onV2 = await v2.searchReady(env.DB);
-      const result = onV2
-        ? await v2.searchDocuments(env.DB, params)
-        : await searchDocuments(env.DB, params);
+      const result = await v2.searchDocuments(env.DB, params);
       return textResult(JSON.stringify({
         total: result.total,
-        items: result.items.map((d) => {
-          const key = "file" in d
-            ? v2.entryKeyOf(d.file)
-            : (d as { r2_key: string }).r2_key.slice(d.flavor.length + 1).replace(/^data\//, "");
-          return {
-            docid: d.docid, flavor: d.flavor, year: d.year, doctype: d.doctype, status: d.status,
-            title: "title" in d ? d.title : (d as { title_en?: string | null }).title_en,
-            record: `https://api.relaton.org/collections/${d.flavor}/entries/${encodeURIComponent(key)}`,
-          };
-        }),
+        items: result.items.map((d) => ({
+          docid: d.docid, flavor: d.flavor, year: d.year, doctype: d.doctype, status: d.status,
+          title: d.title,
+          record: `https://api.relaton.org/collections/${d.flavor}/entries/${encodeURIComponent(v2.entryKeyOf(d.file))}`,
+        })),
       }, null, 2));
     }
 

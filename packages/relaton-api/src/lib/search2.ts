@@ -1,13 +1,22 @@
-import { ftsMatch as ftsMatchExpr } from "./search";
-import { lastPublisherKey, normKey, undatedKey } from "../pubid/keys.ts";
-import { canonicalize, yearOf } from "../pubid/index.ts";
-
 // Query engine over documents_search (migration 0009) — the storage-v2
 // projection of the v1 documents table. Same search semantics (filters,
 // FTS with LIKE fallback, facets, sorting), pubid-aware lookup, and the
-// collection/entry/home reads the cloud store needs. The v1 engine
-// (search.ts/lookup.ts) stays until the backfill completes and the
-// cleanup migration drops the v1 tables; callers pick with searchReady().
+// collection/entry/home reads the cloud store needs.
+import { canonicalize, yearOf } from "../pubid/index.ts";
+import { lastPublisherKey, normKey, undatedKey } from "../pubid/keys.ts";
+
+// Build an FTS5 MATCH string from free text: alphanumeric tokens, prefix
+// matched, ANDed ("ISO 9001" → `iso* AND 9001*`). Returns "" when the
+// query has no usable tokens, or when abstract-only mode needs the LIKE
+// fallback (column-filtered prefixes match too narrowly here). An
+// unpopulated index yields zero rows, so ftsReady gates this path.
+export function ftsMatch(q: string, abstractOnly = false): string {
+  const tokens = q.match(/[A-Za-z0-9]+/g) ?? [];
+  const usable = tokens.filter((w) => w.length >= 2 || /\d/.test(w)).slice(0, 8);
+  if (!usable.length) return "";
+  const expr = usable.map((w) => `${w.toLowerCase()}*`).join(" AND ");
+  return abstractOnly ? `{abstract}: (${expr})` : expr;
+}
 
 export interface SearchRowV2 {
   key: string;
@@ -72,18 +81,6 @@ export interface SearchResultV2 {
   facets: FacetCountsV2;
 }
 
-// True when the v2 search projection holds rows. Probed per request until
-// the backfill completes — caching a stale negative would pin an isolate
-// to the v1 path after the tables fill.
-export async function searchReady(db: D1Database): Promise<boolean> {
-  try {
-    const row = await db.prepare("SELECT key FROM documents_search LIMIT 1").first();
-    return row !== null;
-  } catch {
-    return false; // migration not applied yet
-  }
-}
-
 // Entry URL key for a dataset file: the manifest/entry address space is
 // the file without its extension and without the data/ prefix (the same
 // space the v1 r2_key shape produced).
@@ -116,7 +113,7 @@ function buildWhere(
   if (p.yearFrom != null) push("year >= ?", p.yearFrom);
   if (p.yearTo != null) push("year <= ?", p.yearTo);
   if (p.q) {
-    const match = useFts ? ftsMatchExpr(p.q, p.inAbstract === true) : "";
+    const match = useFts ? ftsMatch(p.q, p.inAbstract === true) : "";
     if (match) {
       push("rowid IN (SELECT rowid FROM documents_search_fts WHERE documents_search_fts MATCH ?)", match);
     } else {
@@ -347,7 +344,13 @@ export async function findEntryRow(
   key: string,
 ): Promise<EntryRowV2 | null> {
   const bare = key.replace(/^data\//, "").replace(/\.(ya?ml|json|xml)$/i, "");
-  const candidates = [`data/${bare}.yaml`, `${bare}.yaml`, `data/${bare}.yml`, `${bare}.yml`];
+  // Dataset paths are slugs; a space-spelled key ("rfc 7231") still
+  // resolves to the slugged file.
+  const slugged = bare.replace(/\s+/g, "-");
+  const candidates = [
+    `data/${bare}.yaml`, `${bare}.yaml`, `data/${bare}.yml`, `${bare}.yml`,
+    `data/${slugged}.yaml`, `${slugged}.yaml`, `data/${slugged}.yml`, `${slugged}.yml`,
+  ];
   return db.prepare(
     `SELECT docid, file FROM documents_search WHERE flavor = ? AND file IN (${candidates.map(() => "?").join(", ")})`,
   ).bind(collection, ...candidates).first<EntryRowV2>();

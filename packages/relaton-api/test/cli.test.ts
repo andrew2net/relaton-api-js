@@ -11,7 +11,7 @@ declare const Buffer: {
   from(input: string): { toString(encoding: string): string };
 };
 
-const { ingestMachineIndex, apiBase, adminToken, postChunks, reconcile } = __cli;
+const { ingestMachineIndex, apiBase, adminToken, reconcile } = __cli;
 
 const b64 = (s: string) => Buffer.from(s).toString("base64");
 
@@ -98,68 +98,6 @@ describe("ingest: machine-index mirror", () => {
     await expect(
       ingestMachineIndex("rfcs", "https://pages.example/rfcs", "https://api.example.org", "tok"),
     ).rejects.toThrow(/no Pages machine index/);
-  });
-});
-
-describe("ingest: chunk posting", () => {
-  it("posts every chunk verbatim to the given endpoint and returns the wave start", async () => {
-    const posts: { url: string; init?: RequestInit }[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
-      posts.push({ url: String(input), init });
-      return jsonResponse({ ok: true, rows: 2, blobs: 2 });
-    }));
-
-    const before = await postChunks(
-      "iso",
-      [
-        { name: "chunk-01.json", body: '{"rows":[1,2]}' },
-        { name: "chunk-02.json", body: '{"rows":[3,4]}' },
-      ],
-      "https://api.example.org/admin/ingest-v2/iso",
-      "tok",
-    );
-
-    expect(posts.map((p) => p.url)).toEqual([
-      "https://api.example.org/admin/ingest-v2/iso",
-      "https://api.example.org/admin/ingest-v2/iso",
-    ]);
-    expect(posts[0]!.init!.body).toBe('{"rows":[1,2]}');
-    expect(() => Date.parse(before)).not.toThrow();
-  });
-
-  it("reconcile targets the v2 endpoint when asked", async () => {
-    const posts: { url: string; init?: RequestInit }[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
-      posts.push({ url: String(input), init });
-      return jsonResponse({ deleted: 3 });
-    }));
-
-    await reconcile("iso", "https://api.example.org", true, "tok", "2026-11-01T00:00:00Z");
-
-    expect(posts.map((p) => p.url)).toEqual(["https://api.example.org/admin/reconcile-v2/iso"]);
-    expect(JSON.parse(String(posts[0]!.init!.body))).toEqual({ before: "2026-11-01T00:00:00Z" });
-  });
-
-  it("exits without reconciling when a chunk fails", async () => {
-    const posts: { url: string }[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL) => {
-      posts.push({ url: String(input) });
-      return new Response("boom", { status: 500 });
-    }));
-    vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("exited");
-    }) as never);
-
-    await expect(
-      postChunks(
-        "iso",
-        [{ name: "chunk-01.json", body: "{}" }],
-        "https://api.example.org/admin/ingest/iso",
-        "tok",
-        { attempts: 1 },
-      ),
-    ).rejects.toThrow("exited");
-    expect(posts.map((p) => p.url)).toEqual(["https://api.example.org/admin/ingest/iso"]);
   });
 });
 
