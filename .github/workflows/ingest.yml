@@ -14,22 +14,27 @@ on:
     inputs:
       v2_flavors:
         description: "Space-separated flavors to ingest into storage v2"
+        type: string
         required: false
         default: ""
       limit:
         description: "Process at most N documents per flavor (shard size; empty = all)"
+        type: string
         required: false
         default: ""
       v2_from_chunk:
         description: "Resume after this many chunks (chunk count to drain before posting)"
+        type: string
         required: false
         default: ""
       reconcile_flavor:
         description: "Reconcile this flavor instead of ingesting (requires reconcile_before)"
+        type: string
         required: false
         default: ""
       reconcile_before:
         description: "Reconcile cutoff: delete rows not re-stamped since this ISO timestamp"
+        type: string
         required: false
         default: ""
   # relaton-data-* repos dispatch this on push (client_payload.flavor), so

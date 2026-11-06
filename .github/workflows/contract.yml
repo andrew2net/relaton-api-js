@@ -12,6 +12,7 @@ on:
     inputs:
       base_url:
         description: "Base URL to run the fixtures against"
+        type: string
         required: false
         default: "https://api.relaton.org"
   schedule:
@@ -22,6 +23,7 @@ on:
     inputs:
       base_url:
         description: "Base URL to run the fixtures against"
+        type: string
         required: false
         default: "https://api.relaton.org"
 

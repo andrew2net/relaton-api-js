@@ -10,6 +10,7 @@ on:
     inputs:
       limit:
         description: "Records per page (default 100)"
+        type: string
         required: false
         default: "100"
 
