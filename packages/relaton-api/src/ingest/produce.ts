@@ -10,6 +10,65 @@ import { load as loadYaml } from "js-yaml";
 // pubid-ts's barrel imports its siblings without extensions.
 import { normKey } from "../pubid/keys.ts";
 
+// The pubid grammar engine needs a real filesystem at import time, so it is
+// loaded lazily and only on the node-side ingest path (the CLI's runtime) —
+// never inside the worker. It gives colliding rows their edition-bearing
+// canonical key from the machine-index row's structured id (relaton-api-js#129).
+type PubidImpl = {
+  parse(ref: string): { render(): string; constructor: { fromHash(h: Record<string, unknown>): { render(): string } | null } | null } | null;
+};
+const engineCache = new Map<string, PubidImpl | null>();
+async function flavorEngine(flavor: string): Promise<PubidImpl | null> {
+  if (!engineCache.has(flavor)) {
+    try {
+      // Cast: the .d.ts lags the runtime - Identifier implements render()
+      // (verified on 0.1.32) but the interface does not declare it yet.
+      const mod = (await import("@pubid/pubid/dist/flavors/index.js")) as {
+        grammarImplementation(flavor: string): PubidImpl | undefined;
+      };
+      engineCache.set(flavor, mod.grammarImplementation(flavor) ?? null);
+    } catch (e) {
+      // Under vitest the engine's package.json walk cannot resolve through
+      // the module runner - tests inject a stub engine instead.
+      console.log(`flavorEngine(${flavor}) unavailable: ${(e as Error).message}`);
+      engineCache.set(flavor, null);
+    }
+  }
+  return engineCache.get(flavor) ?? null;
+}
+
+// Canonical key from a machine-index row's structured id hash: the pubid
+// model's own render of the identity, edition included. Unstripped-`:` keys
+// (the hand-rendered monolith) are normalized first.
+function stripColonKeys(h: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(h)) {
+    const key = k.startsWith(":") ? k.slice(1) : k;
+    out[key] = v && typeof v === "object" && !Array.isArray(v)
+      ? stripColonKeys(v as Record<string, unknown>)
+      : v;
+  }
+  return out;
+}
+
+async function keyFromIdHash(impl: PubidImpl | null, hash: unknown, seedRef: string): Promise<string> {
+  if (!impl || !hash || typeof hash !== "object" || !seedRef) return "";
+  try {
+    // The impl exposes parse/parseUrn; the identifier class carries fromHash.
+    // Seeding parses the row's own printed form - the flavor's grammar reads
+    // it by construction, and the class it yields dispatches fromHash on
+    // _type across the family.
+    const probe = impl.parse(seedRef);
+    const ctor = probe?.constructor?.fromHash ? probe.constructor : null;
+    if (!ctor) return "";
+    const pub = ctor.fromHash(stripColonKeys(hash as Record<string, unknown>));
+    if (!pub || typeof pub.render !== "function") return "";
+    return pub.render();
+  } catch {
+    return "";
+  }
+}
+
 export interface V2Chunk {
   flavor: string;
   repo: string;
@@ -29,6 +88,8 @@ export interface ProduceOptions {
   concurrency?: number;
   onProgress?: (message: string) => void;
   fetchImpl?: typeof fetch;
+  /** Injected by tests: the real path resolves the flavor's engine lazily. */
+  engine?: PubidImpl;
 }
 
 function trimSlash(url: string): string {
@@ -77,21 +138,26 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
   let fromChunk = opts.fromChunk ?? 0;
   let remaining = opts.maxRows ?? Infinity;
 
+  // The engine is injectable for tests; the real path resolves it lazily
+  // (its import needs a real filesystem - never available in the worker).
+  const engine = opts.engine ?? (await flavorEngine(opts.flavor));
+
   const manifest = await pull(fetchImpl, `${pages}/index/manifest.json`)
     .then((r) => r.json() as Promise<{ shards: number; index?: string }>);
   if (!Number.isInteger(manifest.shards) || manifest.shards < 0) throw new Error("manifest has no shard count");
   log(`manifest ok, shards=${manifest.shards}`);
 
-  const shardRows: { r: string; file: string }[] = [];
+  const shardRows: { r: string; idHash?: Record<string, unknown>; file: string }[] = [];
   if (manifest.shards > 0) {
     const PROBE = 24;
     for (let i = 0; i < manifest.shards; i += PROBE) {
       const names: string[] = [];
       for (let s = i; s < Math.min(i + PROBE, manifest.shards); s++) names.push(`shard-${String(s).padStart(5, "0")}.json`);
       const bodies = await Promise.all(
-        names.map((n) => fetchImpl(`${pages}/index/${n}`).then((r) => (r.ok ? (r.json() as Promise<{ r: string; file: string }[]>) : null))),
+        names.map((n) => fetchImpl(`${pages}/index/${n}`).then((r) => (r.ok ? (r.json() as Promise<{ r: string; id?: Record<string, unknown>; file: string }[]>) : null))),
       );
-      for (const rows of bodies) if (rows) shardRows.push(...rows);
+      for (const rows of bodies)
+        if (rows) shardRows.push(...rows.map((row) => ({ ...row, idHash: row.id })));
     }
   } else {
     // Below the sharding threshold the contract publishes no shard files —
@@ -99,7 +165,8 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
     if (!manifest.index) throw new Error("manifest has shards: 0 but names no index artifact");
     const yaml = await pull(fetchImpl, `${pages}/${manifest.index}.yaml`).then((r) => r.text());
     for (const row of (loadYaml(yaml) as { ":file"?: string }[] | null) ?? []) {
-      if (row[":file"]) shardRows.push({ r: "", file: row[":file"] });
+      const mRow = row as { ":file"?: string; ":id"?: Record<string, unknown> };
+      if (mRow[":file"]) shardRows.push({ r: "", idHash: mRow[":id"], file: mRow[":file"] });
     }
   }
   log(`${shardRows.length} index rows${manifest.shards === 0 ? ` (from ${manifest.index}.yaml — below the sharding threshold)` : ""}`);
@@ -108,6 +175,8 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
   // inside the registry document); the first key wins the document, the
   // rest skip until those data repos split their files.
   const seenFiles = new Set<string>();
+  const seenKeys = new Map<string, string>();
+  const deferred: { row: { r: string; idHash?: Record<string, unknown>; file: string }; data: Record<string, unknown> }[] = [];
 
   let chunk: V2Chunk | null = null;
   let index = 0;
@@ -148,6 +217,21 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
         log(`skipped: no key derivable for ${row.file}`);
         continue;
       }
+      // Editions of one document print the same docid, so their printed
+      // keys collide; emitting both would trip doc_keys' (key, document)
+      // primary key and silently collapse the editions besides
+      // (relaton-api-js#129). Defer them: after the walk, the colliding
+      // rows re-key from their structured id - edition included - via the
+      // pubid engine. Non-colliding flavors keep the printed key exactly
+      // as before.
+      const nk = normKey(key);
+      const owner = seenKeys.get(nk);
+      if (owner !== undefined) {
+        deferred.push({ row, data });
+        log(`deferred: ${row.file} (printed key ${nk} collides with ${owner}; re-keys from its id)`);
+        continue;
+      }
+      seenKeys.set(nk, row.file);
       if (!chunk || chunk.rows.length >= chunkSize) {
         if (chunk && !dropForResume()) yield chunk;
         chunk = { flavor: opts.flavor, repo: `relaton/relaton-data-${opts.flavor}`, rows: [], blobs: {} };
@@ -158,6 +242,23 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
       completed = false;
       break;
     }
+  }
+
+  // The deferred collision rows, re-keyed edition-bearing from their
+  // structured ids. Their documents are already fetched; they ride the
+  // same chunk machinery and inherit the final flag.
+  for (const { row, data } of deferred) {
+    const idKey = await keyFromIdHash(engine, row.idHash, row.r || keyFromDoc(data));
+    if (!idKey) {
+      log(`skipped: ${row.file} collided and carries no structured id to re-key from`);
+      continue;
+    }
+    if (!chunk || chunk.rows.length >= chunkSize) {
+      if (chunk && !dropForResume()) yield chunk;
+      chunk = { flavor: opts.flavor, repo: `relaton/relaton-data-${opts.flavor}`, rows: [], blobs: {} };
+    }
+    log(`re-keyed: ${row.file} -> ${idKey}`);
+    chunk.rows.push({ key: idKey, file: row.file, data, keys: [normKey(idKey)] });
   }
 
   if (chunk) {

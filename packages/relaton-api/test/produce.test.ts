@@ -135,6 +135,89 @@ describe("produceV2Chunks", () => {
     expect(chunks[0]!.final).toBe(true);
   });
 
+  it("re-keys colliding editions from their structured ids (relaton-api-js#129)", async () => {
+    // Two IHO editions print the same docid; their printed keys collide.
+    // The first keeps the printed key (deterministic index order), the
+    // later rows re-key edition-bearing from their structured ids via the
+    // pubid engine - no doc_keys collision, no silently collapsed edition.
+    const engine = {
+      parse: (ref: string) => ({
+        render: () => ref,
+        constructor: {
+          fromHash: (h: Record<string, unknown>) => ({
+            render: () => `IHO S-129 ${h.edition as string}`,
+          }),
+        },
+      }),
+    };
+    const opts = options({
+      flavor: "iho",
+      chunkSize: 10,
+      engine,
+    });
+    opts.fetchImpl = stubFetch(
+      {
+        "shard-00000.json": [
+          {
+            r: "IHO S-129",
+            file: "data/s-129_1-0-0.yaml",
+            id: { _type: "pubid:iho:standard", number: "129", edition: "1.0.0" },
+          },
+          {
+            r: "IHO S-129",
+            file: "data/s-129_1-1-0.yaml",
+            id: { _type: "pubid:iho:standard", number: "129", edition: "1.1.0" },
+          },
+        ],
+      },
+      {
+        "data/s-129_1-0-0.yaml": YAML_DOC("IHO S-129"),
+        "data/s-129_1-1-0.yaml": YAML_DOC("IHO S-129"),
+      },
+    );
+    const logs: string[] = [];
+    const chunks = await collect({ ...opts, onProgress: (m) => logs.push(m) });
+    const keys = chunks.flatMap((c) => c.rows.map((r) => r.key));
+    // The first row keeps the printed key; the colliding row re-keys
+    // edition-bearing from its id.
+    expect(keys).toContain("IHO S-129");
+    expect(keys.filter((k) => k === "IHO S-129")).toHaveLength(1);
+    expect(keys).toContain("IHO S-129 1.1.0");
+    // Both editions survive: no silent collapse, no PK crash.
+    expect(chunks.flatMap((c) => c.rows)).toHaveLength(2);
+    // The normalized lookup tokens are distinct.
+    const tokens = chunks.flatMap((c) => c.rows.flatMap((r) => r.keys));
+    expect(new Set(tokens).size).toBe(2);
+    // The collision was surfaced in the run log, not silently dropped.
+    expect(logs.some((m) => m.includes("deferred"))).toBe(true);
+    expect(logs.some((m) => m.startsWith("re-keyed: data/s-129_1-1-0.yaml"))).toBe(true);
+  });
+
+  it("skips a colliding row whose structured id yields no key", async () => {
+    const opts = options({
+      chunkSize: 10,
+      engine: {
+        parse: () => null,
+      },
+    });
+    opts.fetchImpl = stubFetch(
+      {
+        "shard-00000.json": [
+          { r: "RFC 8446", file: "data/rfc8446.yaml" },
+          { r: "RFC 8446", file: "data/rfc8446-bis.yaml", id: { _type: "x" } },
+        ],
+      },
+      {
+        "data/rfc8446.yaml": YAML_DOC("RFC 8446"),
+        "data/rfc8446-bis.yaml": YAML_DOC("RFC 8446"),
+      },
+    );
+    const logs: string[] = [];
+    const chunks = await collect({ ...opts, onProgress: (m) => logs.push(m) });
+    expect(chunks[0]!.rows.map((r) => r.key)).toEqual(["RFC 8446"]);
+    expect(logs.some((m) => m.includes("carries no structured id"))).toBe(true);
+  });
+
   it("does not stamp final when maxRows truncates the wave", async () => {
     const chunks = await collect(options({ chunkSize: 1, maxRows: 1 }));
     expect(chunks).toHaveLength(1);
