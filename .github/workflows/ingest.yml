@@ -83,8 +83,7 @@ jobs:
             # names relaton-data-<repo>, whose Pages site carries the
             # machine index this workflow ingests.
             curl -sf https://raw.githubusercontent.com/relaton/support/main/data-index/configs.yml \
-            | python3 -c 'import json, sys, yaml
-print(json.dumps(sorted(row["repo"] for row in yaml.safe_load(sys.stdin)["repos"])))' \
+            | python3 -c 'import json, sys, yaml; print(json.dumps(sorted(row["repo"] for row in yaml.safe_load(sys.stdin)["repos"])))' \
             > flavors.json
             echo "flavors=$(cat flavors.json)" >> "$GITHUB_OUTPUT"
             cat flavors.json
