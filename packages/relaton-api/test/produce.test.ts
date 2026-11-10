@@ -224,6 +224,75 @@ describe("produceV2Chunks", () => {
     expect(chunks[0]!.final).toBe(false);
   });
 
+  it("backs off and retries a 429 dataset fetch instead of skipping the row", async () => {
+    const shards: Record<string, unknown> = {
+      "shard-00000.json": [{ r: "RFC 8446", file: "data/rfc8446.yaml" }, { r: "RFC 3986", file: "data/rfc3986.yaml" }],
+    };
+    const docs: Record<string, string> = {
+      "data/rfc8446.yaml": YAML_DOC("RFC 8446"),
+      "data/rfc3986.yaml": YAML_DOC("RFC 3986"),
+    };
+    const opts = options({ chunkSize: 10, retryDelaysMs: [1, 1, 1] });
+    let rfc8446Fetches = 0;
+    opts.fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("manifest.json")) return new Response(MANIFEST);
+      const shard = url.match(/(shard-\d{5}\.json)$/)?.[1];
+      if (shard) {
+        if (!(shard in shards)) return new Response("no", { status: 404 });
+        return new Response(JSON.stringify(shards[shard]));
+      }
+      if (url.endsWith("data/rfc8446.yaml")) {
+        rfc8446Fetches += 1;
+        if (rfc8446Fetches === 1) {
+          return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
+        }
+      }
+      const file = url.split("/").slice(-2).join("/");
+      if (file in docs) return new Response(docs[file]);
+      return new Response("no", { status: 404 });
+    }) as typeof fetch;
+    const logs: string[] = [];
+    const chunks = await collect({ ...opts, onProgress: (m) => logs.push(m) });
+    expect(rfc8446Fetches).toBe(2); // the 429 was retried, not skipped
+    expect(chunks[0]!.rows.map((r) => r.key)).toEqual(["RFC 8446", "RFC 3986"]);
+    expect(chunks[0]!.final).toBe(true);
+    expect(logs.some((m) => m.includes("HTTP 429"))).toBe(true);
+  });
+
+  it("throttles the fetch concurrency when the host pushes back", async () => {
+    const shards: Record<string, unknown> = { "shard-00000.json": [{ r: "RFC 1", file: "data/rfc1.yaml" }] };
+    const docs: Record<string, string> = { "data/rfc1.yaml": YAML_DOC("RFC 1") };
+    const opts = options({ chunkSize: 10, retryDelaysMs: [1, 1, 1], concurrency: 16 });
+    let rfc1Fetches = 0;
+    opts.fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("manifest.json")) return new Response(MANIFEST);
+      const shard = url.match(/(shard-\d{5}\.json)$/)?.[1];
+      if (shard) {
+        if (!(shard in shards)) return new Response("no", { status: 404 });
+        return new Response(JSON.stringify(shards[shard]));
+      }
+      if (url.endsWith("data/rfc1.yaml")) {
+        rfc1Fetches += 1;
+        if (rfc1Fetches <= 3) {
+          // Repeated 429s: the gate halves its overlap each time it sees
+          // one (16 -> 8 -> 4, the floor). The retry budget is three.
+          return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
+        }
+      }
+      const file = url.split("/").slice(-2).join("/");
+      if (file in docs) return new Response(docs[file]);
+      return new Response("no", { status: 404 });
+    }) as typeof fetch;
+    const logs: string[] = [];
+    const chunks = await collect({ ...opts, onProgress: (m) => logs.push(m) });
+    expect(chunks[0]!.rows.map((r) => r.key)).toEqual(["RFC 1"]);
+    expect(chunks[0]!.final).toBe(true);
+    expect(logs.some((m) => m.includes("throttling: dataset fetch concurrency -> 8"))).toBe(true);
+    expect(logs.some((m) => m.includes("-> 4"))).toBe(true);
+  });
+
   it("fails loudly when the Pages site has no machine index", async () => {
     const opts = options({});
     opts.fetchImpl = (async () => new Response("no", { status: 404 })) as typeof fetch;
