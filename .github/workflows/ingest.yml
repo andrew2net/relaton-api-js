@@ -75,7 +75,19 @@ jobs:
           if [ -n "$FLAVORS" ]; then
             echo "flavors=$(echo "$FLAVORS" | jq -Rc 'split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
           else
-            echo 'flavors=["3gpp","adobe","bipm","calconnect","ccsds","cie","easc","ecma","etsi","gost","iala","iana","iec","ieee","ietf","iho","iso","itu-r","itu","jcgm","jis","nist","oasis","ogc","oiml","plateau","rfcs","rfcsubseries","sae","w3c","xsf"]' >> "$GITHUB_OUTPUT"
+            # The weekly sweep walks the whole data fleet, named by the
+            # fleet's own census: relaton/support's data-index/configs.yml
+            # (the same file the Pages deploy and branding read). A repo
+            # registered there joins the sweep with no workflow change -
+            # fleet membership IS ingest membership. Each row's repo slug
+            # names relaton-data-<repo>, whose Pages site carries the
+            # machine index this workflow ingests.
+            curl -sf https://raw.githubusercontent.com/relaton/support/main/data-index/configs.yml \
+            | python3 -c 'import json, sys, yaml
+print(json.dumps(sorted(row["repo"] for row in yaml.safe_load(sys.stdin)["repos"])))' \
+            > flavors.json
+            echo "flavors=$(cat flavors.json)" >> "$GITHUB_OUTPUT"
+            cat flavors.json
           fi
 
   ingest-v2:
