@@ -90,6 +90,8 @@ export interface ProduceOptions {
   fetchImpl?: typeof fetch;
   /** Injected by tests: the real path resolves the flavor's engine lazily. */
   engine?: PubidImpl;
+  /** Injected by tests: real-path backoff on 429/network errors. */
+  retryDelaysMs?: number[];
 }
 
 function trimSlash(url: string): string {
@@ -111,6 +113,86 @@ async function pull(fetchImpl: typeof fetch, url: string): Promise<Response> {
   const res = await fetchImpl(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return res;
+}
+
+// The dataset walk's shared fetch throttle. GitHub's raw host 429s a
+// burst of parallel document fetches (the 2026-11-09 sweep lost the six
+// heaviest flavors to it — rows were skipped mid-walk and the legs
+// failed), so the walk observes 429s by halving the overlap and backing
+// off before retrying: slow beats silently missing rows.
+class FetchGate {
+  #parallel: number;
+  #active = 0;
+  #queue: (() => void)[] = [];
+
+  constructor(start: number) {
+    this.#parallel = start;
+  }
+
+  async acquire(): Promise<void> {
+    if (this.#active < this.#parallel) {
+      this.#active++;
+      return;
+    }
+    await new Promise<void>((resolve) => this.#queue.push(resolve));
+    this.#active++;
+  }
+
+  release(): void {
+    this.#active--;
+    this.#queue.shift()?.();
+  }
+
+  throttle(log: (message: string) => void): void {
+    const next = Math.max(4, Math.floor(this.#parallel / 2));
+    if (next < this.#parallel) {
+      this.#parallel = next;
+      log(`throttling: dataset fetch concurrency -> ${next}`);
+    }
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const RETRY_DELAYS_MS = [2_000, 8_000, 30_000];
+
+async function pullWithRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  gate: FetchGate,
+  log: (message: string) => void,
+  retryDelaysMs: number[],
+): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    await gate.acquire();
+    let res: Response;
+    try {
+      res = await fetchImpl(url);
+    } catch (e) {
+      gate.release();
+      if (attempt >= retryDelaysMs.length) throw e;
+      gate.throttle(log);
+      const delay = retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)]!;
+      log(`retrying in ${delay / 1000}s: ${String(e).slice(0, 80)}`);
+      await sleep(delay);
+      continue;
+    }
+    if (res.status === 429) {
+      gate.release();
+      if (attempt >= retryDelaysMs.length) throw new Error(`HTTP 429 for ${url} (persistent after backoff)`);
+      gate.throttle(log);
+      const retryAfter = Number(res.headers.get("retry-after"));
+      const wait = Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1000
+        : retryDelaysMs[Math.min(attempt, retryDelaysMs.length - 1)]!;
+      log(`HTTP 429, backing off ${Math.round(wait / 1000)}s: ${url.split("/").pop()}`);
+      await sleep(wait);
+      continue;
+    }
+    gate.release();
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    return res;
+  }
 }
 
 export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2Chunk> {
@@ -135,6 +217,8 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
   // must fit one run rather than rely on from_chunk resume.
   const concurrency = opts.concurrency ?? 40;
   const log = opts.onProgress ?? (() => {});
+  const gate = new FetchGate(concurrency);
+  const retryDelaysMs = opts.retryDelaysMs ?? RETRY_DELAYS_MS;
   let fromChunk = opts.fromChunk ?? 0;
   let remaining = opts.maxRows ?? Infinity;
 
@@ -195,7 +279,8 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
     const window = shardRows.slice(start, start + concurrency);
     const settled = await Promise.allSettled(
       window.map(async (row) => {
-        const yaml = await pull(fetchImpl, `${repo}/${row.file}`).then((r) => r.text());
+        const yaml = await pullWithRetry(fetchImpl, `${repo}/${row.file}`, gate, log, retryDelaysMs)
+          .then((r) => r.text());
         return { row, data: loadYaml(yaml) as Record<string, unknown> };
       }),
     );
