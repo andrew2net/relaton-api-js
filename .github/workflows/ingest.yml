@@ -75,7 +75,7 @@ jobs:
           if [ -n "$FLAVORS" ]; then
             echo "flavors=$(echo "$FLAVORS" | jq -Rc 'split(" ") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
           else
-            echo 'flavors=["3gpp","adobe","bipm","calconnect","ccsds","cie","easc","ecma","etsi","gost","iala","iana","iec","ieee","ietf","iho","iso","itu-r","itu","jcgm","jis","nist","oasis","ogc","oiml","plateau","rfcs","rfcsubseries","w3c","xsf"]' >> "$GITHUB_OUTPUT"
+            echo 'flavors=["3gpp","adobe","bipm","calconnect","ccsds","cie","easc","ecma","etsi","gost","iala","iana","iec","ieee","ietf","iho","iso","itu-r","itu","jcgm","jis","nist","oasis","ogc","oiml","plateau","rfcs","rfcsubseries","sae","w3c","xsf"]' >> "$GITHUB_OUTPUT"
           fi
 
   ingest-v2:
