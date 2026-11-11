@@ -118,6 +118,42 @@ describe("produceV2Chunks", () => {
     expect(chunks[0]!.final).toBe(true);
   });
 
+  it("resume fetches nothing before the checkpoint (relaton-api-js#137)", async () => {
+    // from_chunk 1 = skip the first chunkSize rows: a resume of a
+    // corpus-class walk must not re-fetch tens of thousands of documents
+    // that are already in storage - the pointless prefix burst was what
+    // re-tripped the rate limit and killed every resume.
+    const fetched: string[] = [];
+    const opts = options({ chunkSize: 1, fromChunk: 1 });
+    opts.fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("manifest.json")) return new Response(MANIFEST);
+      const shard = url.match(/(shard-\d{5}\.json)$/)?.[1];
+      if (shard) {
+        if (!(shard in shards)) return new Response("no", { status: 404 });
+        return new Response(JSON.stringify(shards[shard]));
+      }
+      const file = url.split("/").slice(-2).join("/");
+      fetched.push(file);
+      if (file in docs) return new Response(docs[file]);
+      return new Response("no", { status: 404 });
+    }) as typeof fetch;
+    const shards: Record<string, unknown> = {
+      "shard-00000.json": [{ r: "RFC 8446", file: "data/rfc8446.yaml" }, { r: "RFC 3986", file: "data/rfc3986.yaml" }],
+    };
+    const docs: Record<string, string> = {
+      "data/rfc8446.yaml": YAML_DOC("RFC 8446"),
+      "data/rfc3986.yaml": YAML_DOC("RFC 3986"),
+    };
+    const chunks = await collect(opts);
+    // Chunk 1's document was never fetched (only the default-branch API
+    // probe ran); chunk 2's dataset was, and it is the only emitted chunk.
+    expect(fetched.filter((f) => f.startsWith("data/"))).toEqual(["data/rfc3986.yaml"]);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.rows.map((r) => r.key)).toEqual(["RFC 3986"]);
+    expect(chunks[0]!.final).toBe(true);
+  });
+
   it("skips a second index row that shares a file, keeping the first key", async () => {
     const opts = options({ chunkSize: 10 });
     opts.fetchImpl = stubFetch(
