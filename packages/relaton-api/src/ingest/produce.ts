@@ -263,22 +263,24 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
   const deferred: { row: { r: string; idHash?: Record<string, unknown>; file: string }; data: Record<string, unknown> }[] = [];
 
   let chunk: V2Chunk | null = null;
-  let index = 0;
   let completed = true;
-  const dropForResume = (): boolean => {
-    // Chunks before fromChunk still cost their dataset fetches; drain them
-    // without emitting.
-    if (index < fromChunk) {
-      index += 1;
-      return true;
-    }
-    return false;
-  };
+  // Resume skips rows, not fetches: from_chunk counts chunks, and chunk N
+  // is exactly rows [N*chunkSize, (N+1)*chunkSize) of the deterministic
+  // walk, so every row before fromChunk*chunkSize is already in storage
+  // and its dataset document does not need fetching at all. Re-fetching
+  // the prefix was what made a resume of a corpus-class walk slower than
+  // the original run and re-trip the rate limit on 80k pointless fetches
+  // (relaton-api-js#137). Rows past the checkpoint keep the same chunk
+  // numbering, so a resume lands the failed chunk and everything after.
+  const skipRows = fromChunk * chunkSize;
 
   for (let start = 0; start < shardRows.length; start += concurrency) {
     const window = shardRows.slice(start, start + concurrency);
     const settled = await Promise.allSettled(
-      window.map(async (row) => {
+      window.map(async (row, offset) => {
+        if (start + offset < skipRows) {
+          return { row, data: null as Record<string, unknown> | null };
+        }
         const yaml = await pullWithRetry(fetchImpl, `${repo}/${row.file}`, gate, log, retryDelaysMs)
           .then((r) => r.text());
         return { row, data: loadYaml(yaml) as Record<string, unknown> };
@@ -289,9 +291,10 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
         log(`skipped: ${String(outcome.reason).slice(0, 160)}`);
         continue;
       }
+      const { row, data } = outcome.value;
+      if (data === null) continue; // resumed-over row: already in storage
       if (remaining <= 0) break;
       remaining -= 1;
-      const { row, data } = outcome.value;
       if (seenFiles.has(row.file)) {
         log(`skipped duplicate file: ${row.file} (${row.r})`);
         continue;
@@ -318,7 +321,7 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
       }
       seenKeys.set(nk, row.file);
       if (!chunk || chunk.rows.length >= chunkSize) {
-        if (chunk && !dropForResume()) yield chunk;
+        if (chunk) yield chunk;
         chunk = { flavor: opts.flavor, repo: `relaton/relaton-data-${opts.flavor}`, rows: [], blobs: {} };
       }
       chunk.rows.push({ key, file: row.file, data, keys: [normKey(key)] });
@@ -339,7 +342,7 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
       continue;
     }
     if (!chunk || chunk.rows.length >= chunkSize) {
-      if (chunk && !dropForResume()) yield chunk;
+      if (chunk) yield chunk;
       chunk = { flavor: opts.flavor, repo: `relaton/relaton-data-${opts.flavor}`, rows: [], blobs: {} };
     }
     log(`re-keyed: ${row.file} -> ${idKey}`);
@@ -350,6 +353,6 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
     // A truncated run must not stamp `final`: the wave's ghost cleanup
     // would delete every row the truncation never reached.
     chunk.final = completed;
-    if (!dropForResume()) yield chunk;
+    yield chunk;
   }
 }
