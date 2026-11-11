@@ -61,7 +61,23 @@ function resolveEnvValue(value) {
   return m ? process.env[m[1]] : value;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// D1 rejects chunks while its CPU window recovers ("DB is overloaded.
+// Too many resources consumed within a 10 second window") and kills
+// transactions that ran past its CPU cap ("exceeded its CPU time limit
+// and was reset"). Both answer HTTP 500 with a D1_ERROR body; the
+// window heals in tens of seconds to minutes, so the poster waits in
+// minute steps instead of the 5-15s linear backoff that failed six
+// corpus-class walks in a row (relaton-api-js#137 tracks the
+// server-side chunk splitting this works around).
+const D1_ERROR = /D1_ERROR/;
+const D1_BACKOFF_MS = 60_000;
+const D1_BACKOFF_MAX_MS = 600_000;
+const D1_MAX_WAITING_ATTEMPTS = 30;
+
 async function postJson(url, token, body, attempts = 4) {
+  let d1Waits = 0;
   for (let i = 1; ; i++) {
     try {
       const res = await fetch(url, {
@@ -71,13 +87,29 @@ async function postJson(url, token, body, attempts = 4) {
       });
       if (res.ok) return await res.json().catch(() => ({}));
       const detail = (await res.text()).slice(0, 200);
+      if (D1_ERROR.test(detail) && d1Waits < D1_MAX_WAITING_ATTEMPTS) {
+        const wait = Math.min(D1_BACKOFF_MS * 2 ** d1Waits, D1_BACKOFF_MAX_MS);
+        d1Waits += 1;
+        i -= 1; // a D1 wait is not one of the ordinary attempts
+        console.error(`  D1 throttle #${d1Waits}, waiting ${wait / 1000}s: ${detail}`);
+        await sleep(wait);
+        continue;
+      }
       if (i >= attempts) throw new Error(`HTTP ${res.status}: ${detail}`);
       console.error(`  HTTP ${res.status}, attempt ${i}: ${detail}`);
     } catch (e) {
+      if (D1_ERROR.test(String(e)) && d1Waits < D1_MAX_WAITING_ATTEMPTS) {
+        const wait = Math.min(D1_BACKOFF_MS * 2 ** d1Waits, D1_BACKOFF_MAX_MS);
+        d1Waits += 1;
+        i -= 1;
+        console.error(`  D1 throttle #${d1Waits}, waiting ${wait / 1000}s: ${String(e).slice(0, 120)}`);
+        await sleep(wait);
+        continue;
+      }
       if (i >= attempts) throw e;
       console.error(`  ${String(e).slice(0, 200)}, attempt ${i}`);
     }
-    await new Promise((r) => setTimeout(r, i * 5000));
+    await sleep(i * 5000);
   }
 }
 
@@ -126,6 +158,15 @@ async function ingestV2(flavor, values, base, token) {
   const before = new Date().toISOString();
   let index = 0;
   let posted = 0;
+  // A chunk the poster cannot land (D1 CPU caps on a pathologically
+  // heavy chunk after every throttle wait) must not kill the walk: the
+  // rows after it are just as postable, and the failed chunk is
+  // re-postable via --from-chunk. The leg still exits non-zero at the
+  // end so the workflow's reconcile step is skipped - reconciling after
+  // a partial wave would delete every row the failed chunk never
+  // stamped (relaton-api-js#137).
+  let failedChunk = 0;
+  let failedCount = 0;
   for await (const chunk of produceV2Chunks({
     flavor,
     pagesBase: values.pages ?? `https://relaton.github.io/relaton-data-${flavor}`,
@@ -135,15 +176,29 @@ async function ingestV2(flavor, values, base, token) {
     maxRows: values.limit ? Number(values.limit) : undefined,
     onProgress: (m) => console.log(`${flavor}: ${m}`),
   })) {
-    await postJson(`${base}/admin/ingest-v2/${flavor}`, token, JSON.stringify(chunk));
     index += 1;
-    posted += chunk.rows.length;
-    console.log(`${flavor}: chunk ${index} ok (rows=${chunk.rows.length})`);
+    try {
+      await postJson(`${base}/admin/ingest-v2/${flavor}`, token, JSON.stringify(chunk));
+      posted += chunk.rows.length;
+      console.log(`${flavor}: chunk ${index} ok (rows=${chunk.rows.length})`);
+    } catch (e) {
+      failedChunk ||= index;
+      failedCount += 1;
+      console.error(`${flavor}: chunk ${index} FAILED (rows=${chunk.rows.length} not posted): ${String(e).slice(0, 160)}`);
+    }
   }
   // A wave that ingests nothing is an index/data mismatch, not success —
   // fail loudly so the rollout notices (iana/calconnect taught us this).
   if (posted === 0) {
     console.error(`${flavor}: ingested 0 rows — the index rows and the dataset files disagree`);
+    process.exit(1);
+  }
+  if (failedChunk) {
+    console.error(
+      `${flavor}: ${failedCount} chunk(s) failed (first: #${failedChunk}); posted ${posted} rows. The reconcile step is skipped. ` +
+      `Resume with: ingest ${flavor} --v2 --from-chunk ${failedChunk - 1} ` +
+      `(re-posts the failed chunk and everything after; add --chunk-size 50 if the same chunk fails again)`,
+    );
     process.exit(1);
   }
   await reconcile(flavor, base, token, before);
