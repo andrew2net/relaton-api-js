@@ -2,7 +2,7 @@ name: bulk-ingest
 
 # The bulk import path (relaton-api-js#137): walks the flavor's machine
 # index with the same producer the POST path uses, but writes the ingest
-# statements as SQLite literals and loads them with `wrangler d1 import` —
+# statements as SQLite literals and loads them with `wrangler d1 execute --remote --file` —
 # server-side streaming batching, orders of magnitude cheaper per row than
 # per-chunk D1 transactions. The reconciler for a full wave rides a
 # separate file, imported last, so ghosts of a refreshed index are deleted
@@ -47,11 +47,11 @@ jobs:
           for f in bulk-sql/${{ inputs.flavor }}*.sql; do
             case "$f" in *reconcile*) continue;; esac
             echo "importing $f"
-            npx wrangler@4 d1 import api-relaton-org --remote --file="$f" --yes
+            npx wrangler@4 d1 execute api-relaton-org --remote --file="$f" --yes
           done
       - name: Import the reconciler
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          npx wrangler@4 d1 import api-relaton-org --remote --file="bulk-sql/${{ inputs.flavor }}-reconcile.sql" --yes
+          npx wrangler@4 d1 execute api-relaton-org --remote --file="bulk-sql/${{ inputs.flavor }}-reconcile.sql" --yes

@@ -114,7 +114,7 @@ adminRoutes.post("/admin/ingest-v2/:flavor", async (c) => {
   // The ingest write shape lives in lib/ingest_sql.ts - one builder, two
   // consumers: this route executes the statements through D1 batched
   // prepared statements, and the CLI's --dump-sql mode renders the same
-  // statements as literals for `wrangler d1 import` (relaton-api-js#137).
+  // statements as literals for `wrangler d1 execute --remote --file` (relaton-api-js#137).
   const stmts: SqlStatement[] = buildIngestStatements(chunk, ingestedAt);
   const d1Stmts = stmts.map((st) => c.env.DB.prepare(st.sql).bind(...st.binds));
 

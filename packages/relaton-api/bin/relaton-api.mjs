@@ -150,7 +150,7 @@ async function ingest(...argv) {
 }
 
 // SQLite literal rendering for the bulk import (relaton-api-js#137): the
-// shared builder's binds inlined so `wrangler d1 import` executes the
+// shared builder's binds inlined so `wrangler d1 execute --remote --file` executes the
 // identical write shape the worker route would have.
 function sqliteLiteral(v) {
   if (v === null || v === undefined) return "NULL";
@@ -161,7 +161,7 @@ function sqliteLiteral(v) {
 
 // Bulk mode: walk the machine index with the same producer (fetch throttle,
 // fatal enumeration, resume support) but write the statements as SQLite
-// literals instead of POSTing chunks - `wrangler d1 import` executes the
+// literals instead of POSTing chunks - `wrangler d1 execute --remote --file` executes the
 // file server-side with streaming batching, which is orders of magnitude
 // cheaper per row than per-chunk D1 transactions. The reconcile statements
 // ride a separate file so the workflow imports them only after a full wave.
@@ -273,8 +273,8 @@ async function dumpSqlV2(flavor, values, outDir) {
 
   console.log(`${flavor}: dumped ${rows} rows across ${chunks} chunks into ${outDir}/${flavor}.sql(-2,-3,…)`);
   console.log(`${flavor}: import with:`);
-  console.log(`  for f in ${outDir}/${flavor}.sql ${outDir}/${flavor}-*.sql; do case "$f" in *reconcile*) continue;; esac; npx wrangler d1 import api-relaton-org --remote --file="$f" --yes; done`);
-  console.log(`  npx wrangler d1 import api-relaton-org --remote --file=${outDir}/${flavor}-reconcile.sql --yes`);
+  console.log(`  for f in ${outDir}/${flavor}.sql ${outDir}/${flavor}-*.sql; do case "$f" in *reconcile*) continue;; esac; npx wrangler d1 execute api-relaton-org --remote --file="$f" --yes; done`);
+  console.log(`  npx wrangler d1 execute api-relaton-org --remote --file=${outDir}/${flavor}-reconcile.sql --yes`);
 }
 
 // Rows the wave never re-stamped are ghosts and get deleted (v2 store).

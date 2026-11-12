@@ -3,7 +3,7 @@
 // One builder, two consumers (relaton-api-js#137's bulk-import track): the
 // worker route executes these through D1 batched prepared statements, and
 // the CLI's `--dump-sql` mode renders the binds as SQLite literals into a
-// file for `wrangler d1 import`. Because both render from THIS module, the
+// file for `wrangler d1 execute --remote --file`. Because both render from THIS module, the
 // bulk path cannot drift from the API path - there is one write shape.
 //
 // The batching mirrors the worker's: one multi-row upsert per ~90 binds,
