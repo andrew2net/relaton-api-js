@@ -129,6 +129,7 @@ async function ingest(...argv) {
       "chunk-size": { type: "string" },
       base: { type: "string" },
       "token-env": { type: "string" },
+      "dump-sql": { type: "string" },
     },
   });
   if (!flavor) {
@@ -136,13 +137,117 @@ async function ingest(...argv) {
     process.exit(1);
   }
   // CI runs the CLI from a repo checkout with no relaton-api.yaml; the
-  // explicit --base/--token-env flags carry everything then.
+  // explicit --base/--token-env flags carry everything then. Dump mode
+  // needs neither: it writes SQL locally and never talks to the API.
   const config = existsSync("relaton-api.yaml") ? loadConfig() : {};
+  if (values.v2 && values["dump-sql"]) return dumpSqlV2(flavor, values, values["dump-sql"]);
   const base = apiBase(config, values.base);
   const token = adminToken(config, values["token-env"]);
 
   if (values.v2) return ingestV2(flavor, values, base, token);
   return ingestMachineIndex(flavor, values.pages, base, token);
+}
+
+// SQLite literal rendering for the bulk import (relaton-api-js#137): the
+// shared builder's binds inlined so `wrangler d1 import` executes the
+// identical write shape the worker route would have.
+function sqliteLiteral(v) {
+  if (v === null || v === undefined) return "NULL";
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "NULL";
+  if (typeof v === "boolean") return v ? "1" : "0";
+  return `'${String(v).replaceAll("'", "''")}'`;
+}
+
+// Bulk mode: walk the machine index with the same producer (fetch throttle,
+// fatal enumeration, resume support) but write the statements as SQLite
+// literals instead of POSTing chunks - `wrangler d1 import` executes the
+// file server-side with streaming batching, which is orders of magnitude
+// cheaper per row than per-chunk D1 transactions. The reconcile statements
+// ride a separate file so the workflow imports them only after a full wave.
+async function dumpSqlV2(flavor, values, outDir) {
+  const { produceV2Chunks } = await import("../src/ingest/produce.ts");
+  const { buildIngestStatements, buildReconcileStatements } = await import("../src/lib/ingest_sql.ts");
+  const fs = await import("node:fs");
+  fs.mkdirSync(outDir, { recursive: true });
+  const before = new Date().toISOString();
+
+  const FILE_CAP = 40 * 1024 * 1024;
+  let fileNo = 1;
+  let fileBytes = 0;
+  let out = fs.createWriteStream(`${outDir}/${flavor}.sql`);
+  let chunks = 0;
+  let rows = 0;
+  const writeStmts = (stmts) => {
+    for (const st of stmts) {
+      // ingest statements use bare "?" in positional order; the reconcile
+      // and final-chunk statements use numbered "?N" binds.
+      const rendered = /\?\d/.test(st.sql)
+        ? st.sql.replace(/\?(\d+)/g, (_, n) => sqliteLiteral(st.binds[Number(n) - 1]))
+        : st.sql.replace(/\?/g, () => sqliteLiteral(st.binds.shift()));
+      const text = rendered.endsWith(";") ? rendered : `${rendered};`;
+      const buf = `${text}\n`;
+      if (fileBytes + buf.length > FILE_CAP) {
+        out.end();
+        fileNo += 1;
+        fileBytes = 0;
+        out = fs.createWriteStream(`${outDir}/${flavor}-${fileNo}.sql`);
+      }
+      out.write(buf);
+      fileBytes += buf.length;
+    }
+  };
+
+  let failedChunk = 0;
+  let failedCount = 0;
+  for await (const chunk of produceV2Chunks({
+    flavor,
+    pagesBase: values.pages ?? `https://relaton.github.io/relaton-data-${flavor}`,
+    repoBase: values["repo-base"],
+    chunkSize: values["chunk-size"] ? Number(values["chunk-size"]) : undefined,
+    fromChunk: values["from-chunk"] ? Number(values["from-chunk"]) : 0,
+    maxRows: values.limit ? Number(values.limit) : undefined,
+    onProgress: (m) => console.log(`${flavor}: ${m}`),
+  })) {
+    chunks += 1;
+    try {
+      writeStmts(buildIngestStatements(chunk, before));
+      rows += chunk.rows.length;
+      console.log(`${flavor}: chunk ${chunks} dumped (rows=${chunk.rows.length})`);
+    } catch (e) {
+      failedChunk ||= chunks;
+      failedCount += 1;
+      console.error(`${flavor}: chunk ${chunks} FAILED (rows=${chunk.rows.length} not dumped): ${String(e).slice(0, 160)}`);
+    }
+  }
+  out.end();
+  await new Promise((resolve) => out.on("close", resolve));
+
+  if (failedChunk) {
+    console.error(`${flavor}: ${failedCount} chunk(s) failed (first: #${failedChunk}); dumped ${rows} rows. ` +
+      `Resume with: ingest ${flavor} --v2 --dump-sql ${outDir} --from-chunk ${failedChunk - 1}`);
+    process.exit(1);
+  }
+  if (rows === 0) {
+    console.error(`${flavor}: dumped 0 rows — the index rows and the dataset files disagree`);
+    process.exit(1);
+  }
+  // The reconcile for a full wave, as its own file: imported only after the
+  // data files, it deletes the ghosts the refreshed index left behind.
+  const rec = fs.createWriteStream(`${outDir}/${flavor}-reconcile.sql`);
+  const recStmts = buildReconcileStatements(flavor, before);
+  for (const st of recStmts) {
+    const rendered = /\?\d/.test(st.sql)
+      ? st.sql.replace(/\?(\d+)/g, (_, n) => sqliteLiteral(st.binds[Number(n) - 1]))
+      : st.sql.replace(/\?/g, () => sqliteLiteral(st.binds.shift()));
+    rec.write(`${rendered.endsWith(";") ? rendered : `${rendered};`}\n`);
+  }
+  rec.end();
+  await new Promise((resolve) => rec.on("close", resolve));
+
+  console.log(`${flavor}: dumped ${rows} rows across ${chunks} chunks into ${outDir}/${flavor}.sql(-2,-3,…)`);
+  console.log(`${flavor}: import with:`);
+  console.log(`  for f in ${outDir}/${flavor}.sql ${outDir}/${flavor}-*.sql; do case "$f" in *reconcile*) continue;; esac; npx wrangler d1 import api-relaton-org --remote --file="$f" --yes; done`);
+  console.log(`  npx wrangler d1 import api-relaton-org --remote --file=${outDir}/${flavor}-reconcile.sql --yes`);
 }
 
 // Rows the wave never re-stamped are ghosts and get deleted (v2 store).
