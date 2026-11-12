@@ -152,11 +152,17 @@ async function ingest(...argv) {
 // SQLite literal rendering for the bulk import (relaton-api-js#137): the
 // shared builder's binds inlined so `wrangler d1 execute --remote --file` executes the
 // identical write shape the worker route would have.
+// NUL bytes are stripped: a raw 0x00 inside a string literal terminates
+// the D1 import stream - every statement after it is silently dropped as
+// wrangler's "leftover buffer" (2026-11-12 etsi legs: one ETSI abstract
+// carries a literal NUL and killed the last file at the same statement
+// across three runs). The POST path is unaffected - NUL rides inside a
+// JSON bind parameter.
 function sqliteLiteral(v) {
   if (v === null || v === undefined) return "NULL";
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "NULL";
   if (typeof v === "boolean") return v ? "1" : "0";
-  return `'${String(v).replaceAll("'", "''")}'`;
+  return `'${String(v).replaceAll("\u0000", "").replaceAll("'", "''")}'`;
 }
 
 // Bulk mode: walk the machine index with the same producer (fetch throttle,
