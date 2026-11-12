@@ -181,12 +181,15 @@ async function dumpSqlV2(flavor, values, outDir) {
   let fetchImpl;
   if (values["data-clone"]) {
     const cloneDir = String(values["data-clone"]).replace(/\/+$/, "");
-    const rawPrefix = new RegExp(`^https://raw\\.githubusercontent\\.com/relaton/relaton-data-${flavor}/[^/]+/`);
+    const rawBase = `https://raw.githubusercontent.com/relaton/relaton-data-${flavor}/`;
     fetchImpl = (url) => {
-      const m = rawPrefix.exec(url);
-      if (!m) return fetch(url);
+      const s = String(url);
+      if (!s.startsWith(rawBase)) return fetch(url);
+      const rest = s.slice(rawBase.length);
+      const slash = rest.indexOf("/");
+      if (slash === -1) return fetch(url);
       try {
-        const body = fs.readFileSync(`${cloneDir}/${url.slice(m[0].length)}`, "utf8");
+        const body = fs.readFileSync(`${cloneDir}/${rest.slice(slash + 1)}`, "utf8");
         return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(body) });
       } catch {
         return fetch(url);
