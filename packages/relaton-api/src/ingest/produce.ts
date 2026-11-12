@@ -237,7 +237,20 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
   log(`manifest ok, shards=${manifest.shards}`);
 
   const shardRows: { r: string; idHash?: Record<string, unknown>; file: string }[] = [];
-  if (manifest.shards > 0) {
+  if (manifest.index) {
+    // Monolith first whenever the manifest names one, even above the
+    // sharding threshold: one fetch cannot trip the per-file burst limits
+    // that a 16k-shard enumeration can (the 2026-11-12 iso walk lost
+    // 1,434 of 16,384 shards to fleet rate limits at 300s backoffs while
+    // this same monolith fetched fine). Shards remain the enumeration for
+    // index generations that publish no monolith.
+    const yaml = await pullWithRetry(fetchImpl, `${pages}/${manifest.index}.yaml`, gate, log, retryDelaysMs)
+      .then((r) => r.text());
+    for (const row of (loadYaml(yaml) as { ":file"?: string }[] | null) ?? []) {
+      const mRow = row as { ":file"?: string; ":id"?: Record<string, unknown> };
+      if (mRow[":file"]) shardRows.push({ r: "", idHash: mRow[":id"], file: mRow[":file"] });
+    }
+  } else if (manifest.shards > 0) {
     const PROBE = 24;
     // Shard enumeration goes through the same throttle/retry gate as the
     // datasets, and a shard that still will not load is FATAL: the manifest
@@ -266,17 +279,10 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
         `machine index enumeration incomplete: ${unfetched} of ${manifest.shards} shards unfetchable after backoff`,
       );
     }
-  } else {
-    // Below the sharding threshold the contract publishes no shard files —
-    // only the monolith, named by the manifest's `index` field.
-    if (!manifest.index) throw new Error("manifest has shards: 0 but names no index artifact");
-    const yaml = await pull(fetchImpl, `${pages}/${manifest.index}.yaml`).then((r) => r.text());
-    for (const row of (loadYaml(yaml) as { ":file"?: string }[] | null) ?? []) {
-      const mRow = row as { ":file"?: string; ":id"?: Record<string, unknown> };
-      if (mRow[":file"]) shardRows.push({ r: "", idHash: mRow[":id"], file: mRow[":file"] });
-    }
+  } else if (!manifest.index) {
+    throw new Error("manifest names neither an index artifact nor shards");
   }
-  log(`${shardRows.length} index rows${manifest.shards === 0 ? ` (from ${manifest.index}.yaml — below the sharding threshold)` : ""}`);
+  log(`${shardRows.length} index rows${manifest.index ? ` (from monolith ${manifest.index}.yaml)` : ""}`);
 
   // Completeness gate: the manifest's `count` is the index generation's own
   // row tally. A walk that enumerated materially fewer rows would ingest a

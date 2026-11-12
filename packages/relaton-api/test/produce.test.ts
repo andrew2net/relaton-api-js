@@ -118,6 +118,41 @@ describe("produceV2Chunks", { timeout: 60_000 }, () => {
     expect(chunks[0]!.final).toBe(true);
   });
 
+  it("prefers the monolith over shards when the manifest names both", async () => {
+    // Above the sharding threshold the publisher ships shards AND the
+    // monolith; the 2026-11-12 iso walk proved a 16k-shard enumeration
+    // loses shards to rate limits that the single monolith fetch survives.
+    const opts = options({ chunkSize: 10 });
+    const indexYaml = [
+      "- :id:",
+      "    _type: pubid:rfc:rfc",
+      "  :file: data/rfc8446.yaml",
+      "- :id:",
+      "    _type: pubid:rfc:rfc",
+      "  :file: data/rfc3986.yaml",
+    ].join("\n");
+    const fetched: string[] = [];
+    opts.fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      fetched.push(url);
+      if (url.endsWith("manifest.json")) {
+        return new Response(JSON.stringify({ version: 2, shards: 2, index: "index-v2", count: 2 }));
+      }
+      if (url.endsWith("index-v2.yaml")) return new Response(indexYaml);
+      if (/shard-\d{5}\.json$/.test(url)) return new Response("no", { status: 404 });
+      const file = url.split("/").slice(-2).join("/");
+      if (file === "data/rfc8446.yaml") return new Response(YAML_DOC("RFC 8446"));
+      if (file === "data/rfc3986.yaml") return new Response(YAML_DOC("RFC 3986"));
+      return new Response("no", { status: 404 });
+    }) as typeof fetch;
+
+    const chunks = await collect(opts);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.rows.map((r) => r.key)).toEqual(["RFC 8446", "RFC 3986"]);
+    expect(chunks[0]!.final).toBe(true);
+    expect(fetched.some((u) => /shard-\d{5}\.json$/.test(u))).toBe(false);
+  });
+
   it("resume fetches nothing before the checkpoint (relaton-api-js#137)", async () => {
     // from_chunk 1 = skip the first chunkSize rows: a resume of a
     // corpus-class walk must not re-fetch tens of thousands of documents

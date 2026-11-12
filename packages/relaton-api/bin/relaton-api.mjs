@@ -130,6 +130,7 @@ async function ingest(...argv) {
       base: { type: "string" },
       "token-env": { type: "string" },
       "dump-sql": { type: "string" },
+      "data-clone": { type: "string" },
     },
   });
   if (!flavor) {
@@ -171,6 +172,28 @@ async function dumpSqlV2(flavor, values, outDir) {
   fs.mkdirSync(outDir, { recursive: true });
   const before = new Date().toISOString();
 
+  // With --data-clone, dataset reads come off a local clone of the data
+  // repo instead of raw.githubusercontent: an 80k-dataset walk over HTTP
+  // is the remaining rate-limit exposure after the monolith index fix,
+  // and the datasets are committed in the repo. Anything the clone lacks
+  // (added after the clone, or never committed) still fetches over the
+  // network, so clone staleness cannot fail the walk.
+  let fetchImpl;
+  if (values["data-clone"]) {
+    const cloneDir = String(values["data-clone"]).replace(/\/+$/, "");
+    const rawPrefix = new RegExp(`^https://raw\\.githubusercontent\\.com/relaton/relaton-data-${flavor}/[^/]+/`);
+    fetchImpl = (url) => {
+      const m = rawPrefix.exec(url);
+      if (!m) return fetch(url);
+      try {
+        const body = fs.readFileSync(`${cloneDir}/${url.slice(m[0].length)}`, "utf8");
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(body) });
+      } catch {
+        return fetch(url);
+      }
+    };
+  }
+
   const FILE_CAP = 40 * 1024 * 1024;
   let fileNo = 1;
   let fileBytes = 0;
@@ -203,6 +226,7 @@ async function dumpSqlV2(flavor, values, outDir) {
     flavor,
     pagesBase: values.pages ?? `https://relaton.github.io/relaton-data-${flavor}`,
     repoBase: values["repo-base"],
+    fetchImpl,
     chunkSize: values["chunk-size"] ? Number(values["chunk-size"]) : undefined,
     fromChunk: values["from-chunk"] ? Number(values["from-chunk"]) : 0,
     maxRows: values.limit ? Number(values.limit) : undefined,

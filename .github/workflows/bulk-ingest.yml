@@ -29,10 +29,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Clone the data repo for dataset reads
+        # Datasets are committed in relaton-data-*; reading them off a local
+        # clone removes the ~80k raw.githubusercontent fetches that rate
+        # limits turned into silent walk losses (2026-11-12 iso).
+        run: git clone --depth 1 --single-branch "https://github.com/relaton/relaton-data-${{ inputs.flavor }}" data-clone
       - name: Dump the flavor's machine index to SQL
         run: |
           node packages/relaton-api/bin/relaton-api.mjs ingest "${{ inputs.flavor }}" \
-            --v2 --dump-sql bulk-sql/
+            --v2 --dump-sql bulk-sql/ --data-clone data-clone
       - name: Import the data files
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
