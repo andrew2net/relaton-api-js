@@ -49,9 +49,22 @@ jobs:
         run: |
           set -e
           flavor="${{ inputs.flavor }}"
+          # d1 execute rolls back a failed execution and is safe to retry
+          # (the API's own note); the 2026-11-12 iso leg lost its
+          # reconciler to a transient 7009 upstream blip after every data
+          # file had landed.
           import_one() {
-            echo "importing $1"
-            npx wrangler@4 d1 execute api-relaton-org --remote --file="$1" --yes
+            f="$1"
+            for attempt in 1 2 3; do
+              echo "importing $f (attempt $attempt)"
+              if npx wrangler@4 d1 execute api-relaton-org --remote --file="$f" --yes; then
+                return 0
+              fi
+              echo "import of $f failed, waiting 60s before retry"
+              sleep 60
+            done
+            echo "import of $f failed after 3 attempts"
+            return 1
           }
           import_one "bulk-sql/${flavor}.sql"
           i=2
