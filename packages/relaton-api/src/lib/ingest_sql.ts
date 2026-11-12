@@ -202,10 +202,12 @@ export function buildIngestStatements(chunk: IngestChunkLike, ingestedAt: string
 // kills it at ~60s with "Upstream service unavailable [code: 7009]"
 // (twice, deterministically, on the 2026-11-12 iso leg) while the same
 // endpoint handles the 40MB data files fine, since their statements are
-// bounded. Extra rounds are no-ops once the stale set is exhausted.
+// bounded. 40 rounds clean up to 20k ghosts per wave - plenty for weekly
+// refresh deltas; a post-collapse remainder dies in the next wave's
+// reconcile. Extra rounds are no-ops once the stale set is exhausted.
 export function buildReconcileStatements(flavor: string, before: string): SqlStatement[] {
   const stale = `flavor = ?1 AND (indexed_at IS NULL OR indexed_at < ?2)`;
-  const ROUNDS = 100;
+  const ROUNDS = 40;
   const BATCH = 500;
   const stmts: SqlStatement[] = [];
   for (let r = 0; r < ROUNDS; r++) {
