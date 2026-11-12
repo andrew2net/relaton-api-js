@@ -19,13 +19,16 @@ function chunk(rows: IngestChunkLike["rows"]): IngestChunkLike {
   return { flavor: "iso", repo: "relaton/relaton-data-iso", rows, blobs: {}, final: true };
 }
 
+const rendered = (s: { sql: string; binds: unknown[] }) =>
+  s.sql.length + s.binds.reduce<number>((n, b) => n + String(b).length, 0);
+
 describe("buildIngestStatements", () => {
   it("splits groups by the bind cap for small rows", () => {
     const stmts = buildIngestStatements(chunk(Array.from({ length: 200 }, (_, i) => row(`ISO ${i}`))), "2026-11-12T00:00:00Z");
     const docUpserts = stmts.filter((s) => s.sql.includes("INSERT INTO documents_v2"));
     // 5 columns x 90 binds = 18 rows per statement: 200 rows -> 12
     expect(docUpserts.length).toBe(12);
-    for (const s of stmts) expect(s.sql.length + s.binds.reduce((n, b) => n + String(b).length, 0)).toBeLessThan(STMT_BYTE_CAP + 5000);
+    for (const s of stmts) expect(rendered(s)).toBeLessThan(STMT_BYTE_CAP + 5000);
   });
 
   it("flushes groups early when document JSON is large", () => {
@@ -35,8 +38,7 @@ describe("buildIngestStatements", () => {
     const stmts = buildIngestStatements(chunk(Array.from({ length: 200 }, (_, i) => row(`ISO ${i}`, 40_000))), "2026-11-12T00:00:00Z");
     const docUpserts = stmts.filter((s) => s.sql.includes("INSERT INTO documents_v2"));
     expect(docUpserts.length).toBeGreaterThan(18);
-    const rendered = docUpserts.map((s) => s.sql.length + s.binds.reduce((n, b) => n + String(b).length, 0));
-    for (const n of rendered) expect(n).toBeLessThan(120_000);
+    for (const s of docUpserts) expect(rendered(s)).toBeLessThan(120_000);
     // every row present exactly once
     const inserted = docUpserts.flatMap((s) => s.binds.filter((_, i) => i % 5 === 0));
     expect(inserted).toHaveLength(200);
