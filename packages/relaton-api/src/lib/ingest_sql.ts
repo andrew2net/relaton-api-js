@@ -199,17 +199,28 @@ export function buildIngestStatements(chunk: IngestChunkLike, ingestedAt: string
 // re-stamped since `before`, plus the flavor's row tally. The deletes run
 // in bounded rounds (500 keys per statement) because a flavor-wide DELETE
 // with FK cascades is too heavy for the D1 import endpoint — the gateway
-// kills it at ~60s with "Upstream service unavailable [code: 7009]"
-// (twice, deterministically, on the 2026-11-12 iso leg) while the same
-// endpoint handles the 40MB data files fine, since their statements are
-// bounded. 40 rounds clean up to 20k ghosts per wave - plenty for weekly
-// refresh deltas; a post-collapse remainder dies in the next wave's
-// reconcile. Extra rounds are no-ops once the stale set is exhausted.
+// kills it at ~60s with "Upstream service unavailable [code: 7009]".
+// The stale predicate must stay OR-FREE: `indexed_at IS NULL OR < ?`
+// defeats the (flavor, indexed_at) index range and leaves each round
+// scanning every row of the flavor — 80 rounds blew the D1 CPU cap
+// (2026-11-12 iso legs). NULLs don't exist in practice (ingest always
+// stamps), so they get one bounded cleanup pair instead of the OR.
+// Extra rounds are no-ops once the stale set is exhausted.
 export function buildReconcileStatements(flavor: string, before: string): SqlStatement[] {
-  const stale = `flavor = ?1 AND (indexed_at IS NULL OR indexed_at < ?2)`;
+  const stale = `flavor = ?1 AND indexed_at < ?2`;
+  const nulls = `flavor = ?1 AND indexed_at IS NULL`;
   const ROUNDS = 40;
   const BATCH = 500;
-  const stmts: SqlStatement[] = [];
+  const stmts: SqlStatement[] = [
+    {
+      sql: `DELETE FROM doc_keys WHERE document IN (SELECT key FROM documents_v2 WHERE ${nulls} LIMIT ${BATCH})`,
+      binds: [flavor],
+    },
+    {
+      sql: `DELETE FROM documents_v2 WHERE key IN (SELECT key FROM documents_v2 WHERE ${nulls} LIMIT ${BATCH})`,
+      binds: [flavor],
+    },
+  ];
   for (let r = 0; r < ROUNDS; r++) {
     stmts.push({
       sql: `DELETE FROM doc_keys WHERE document IN (SELECT key FROM documents_v2 WHERE ${stale} LIMIT ${BATCH})`,

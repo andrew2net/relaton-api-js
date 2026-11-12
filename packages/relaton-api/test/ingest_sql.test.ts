@@ -71,6 +71,9 @@ describe("buildReconcileStatements", () => {
     expect(docDeletes.length).toBeGreaterThan(10);
     expect(docKeyDeletes.every((s) => s.sql.includes("LIMIT 500"))).toBe(true);
     expect(docDeletes.every((s) => s.sql.includes("LIMIT 500"))).toBe(true);
+    // the OR defeats the (flavor, indexed_at) index range and sent every
+    // round over a full flavor scan - D1 CPU-cap reset (2026-11-12 iso)
+    expect(stmts.every((s) => !s.sql.includes("IS NULL OR"))).toBe(true);
     expect(stmts.at(-1)!.sql).toContain("doc_count");
     for (const s of stmts) expect(s.binds.length).toBeLessThanOrEqual(2);
   });
