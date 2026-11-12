@@ -76,5 +76,20 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # The 2026-11-12 iso legs lost the reconcile three times here: no
+        # retry (the data-files step had it, this one never did) and no
+        # index on (flavor, indexed_at) - every bounded round scanned the
+        # whole flavor and the import gateway killed the file at ~60s.
         run: |
-          npx wrangler@4 d1 execute api-relaton-org --remote --file="bulk-sql/${{ inputs.flavor }}-reconcile.sql" --yes
+          set -e
+          rec="bulk-sql/${{ inputs.flavor }}-reconcile.sql"
+          for attempt in 1 2 3; do
+            echo "importing $rec (attempt $attempt)"
+            if npx wrangler@4 d1 execute api-relaton-org --remote --file="$rec" --yes; then
+              exit 0
+            fi
+            echo "import of $rec failed, waiting 60s before retry"
+            sleep 60
+          done
+          echo "import of $rec failed after 3 attempts"
+          exit 1
