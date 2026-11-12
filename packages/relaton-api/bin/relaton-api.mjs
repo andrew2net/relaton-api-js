@@ -167,7 +167,7 @@ function sqliteLiteral(v) {
 // ride a separate file so the workflow imports them only after a full wave.
 async function dumpSqlV2(flavor, values, outDir) {
   const { produceV2Chunks } = await import("../src/ingest/produce.ts");
-  const { buildIngestStatements, buildReconcileStatements } = await import("../src/lib/ingest_sql.ts");
+  const { buildIngestStatements, buildReconcileStatements, bulkTriggerDropStatements, bulkTriggerRestoreStatements } = await import("../src/lib/ingest_sql.ts");
   const fs = await import("node:fs");
   fs.mkdirSync(outDir, { recursive: true });
   const before = new Date().toISOString();
@@ -223,6 +223,11 @@ async function dumpSqlV2(flavor, values, outDir) {
     }
   };
 
+  // FTS triggers off for the whole import (see bulkTriggerDropStatements):
+  // their per-row FTS5 maintenance stalls the import stream by the tail of
+  // a corpus-class file and wrangler silently drops the rest.
+  writeStmts(bulkTriggerDropStatements());
+
   let failedChunk = 0;
   let failedCount = 0;
   for await (const chunk of produceV2Chunks({
@@ -259,9 +264,14 @@ async function dumpSqlV2(flavor, values, outDir) {
     process.exit(1);
   }
   // The reconcile for a full wave, as its own file: imported only after the
-  // data files, it deletes the ghosts the refreshed index left behind.
+  // data files, it deletes the ghosts the refreshed index left behind,
+  // restores the FTS triggers the dump dropped, and rebuilds the FTS
+  // index wholesale from the content table.
   const rec = fs.createWriteStream(`${outDir}/${flavor}-reconcile.sql`);
-  const recStmts = buildReconcileStatements(flavor, before);
+  const recStmts = [
+    ...buildReconcileStatements(flavor, before),
+    ...bulkTriggerRestoreStatements(),
+  ];
   for (const st of recStmts) {
     const rendered = /\?\d/.test(st.sql)
       ? st.sql.replace(/\?(\d+)/g, (_, n) => sqliteLiteral(st.binds[Number(n) - 1]))

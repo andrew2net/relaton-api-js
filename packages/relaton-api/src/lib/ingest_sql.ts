@@ -200,6 +200,58 @@ export function buildIngestStatements(chunk: IngestChunkLike, ingestedAt: string
   return stmts;
 }
 
+// Bulk-import FTS bypass: every documents_search upsert fires the FTS5
+// sync triggers (migration 0009), and the delete+insert pair grows with
+// the index - by the tail of a corpus-class import the batches stall past
+// the import API's patience and wrangler silently drops the rest of the
+// file ("Warning: leftover buffer", 2026-11-12 etsi legs, twice,
+// deterministically at the same statement). The bulk path drops the
+// triggers before the data files, restores them with the reconciler, and
+// rebuilds the external-content index wholesale from the content table.
+// The worker POST path never touches these - its batches are small.
+// Trigger bodies mirror migration 0009; keep them in sync.
+export function bulkTriggerDropStatements(): SqlStatement[] {
+  return [
+    `DROP TRIGGER IF EXISTS documents_search_fts_ai`,
+    `DROP TRIGGER IF EXISTS documents_search_fts_ad`,
+    `DROP TRIGGER IF EXISTS documents_search_fts_au`,
+  ].map((sql) => ({ sql, binds: [] }));
+}
+
+export function bulkTriggerRestoreStatements(): SqlStatement[] {
+  return [
+    {
+      sql: `CREATE TRIGGER IF NOT EXISTS documents_search_fts_ai AFTER INSERT ON documents_search BEGIN
+  INSERT INTO documents_search_fts(rowid, docid, title, abstract)
+  VALUES (new.rowid, new.docid, new.title, new.abstract);
+END`,
+      binds: [],
+    },
+    {
+      sql: `CREATE TRIGGER IF NOT EXISTS documents_search_fts_ad AFTER DELETE ON documents_search BEGIN
+  INSERT INTO documents_search_fts(documents_search_fts, rowid, docid, title, abstract)
+  VALUES ('delete', old.rowid, old.docid, old.title, old.abstract);
+END`,
+      binds: [],
+    },
+    {
+      sql: `CREATE TRIGGER IF NOT EXISTS documents_search_fts_au AFTER UPDATE OF docid, title, abstract ON documents_search BEGIN
+  INSERT INTO documents_search_fts(documents_search_fts, rowid, docid, title, abstract)
+  VALUES ('delete', old.rowid, old.docid, old.title, old.abstract);
+  INSERT INTO documents_search_fts(rowid, docid, title, abstract)
+  VALUES (new.rowid, new.docid, new.title, new.abstract);
+END`,
+      binds: [],
+    },
+    // External-content FTS5: the index is rebuilt wholesale from the
+    // content table (documents_search), which the data files just landed.
+    {
+      sql: `INSERT INTO documents_search_fts(documents_search_fts) VALUES('rebuild')`,
+      binds: [],
+    },
+  ];
+}
+
 // The ghost cleanup for a full wave: everything the flavor's walk never
 // re-stamped since `before`, plus the flavor's row tally. The deletes run
 // in bounded rounds (500 keys per statement) because a flavor-wide DELETE
