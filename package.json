@@ -30,7 +30,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.21.3",
     "@cloudflare/workers-types": "^5.20260816.1",
-    "@pubid/pubid": "^0.1.32",
+    "@pubid/pubid": "^0.1.37",
     "@types/js-yaml": "^4.0.9",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
