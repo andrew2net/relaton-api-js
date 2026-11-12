@@ -272,8 +272,9 @@ async function dumpSqlV2(flavor, values, outDir) {
   await new Promise((resolve) => rec.on("close", resolve));
 
   console.log(`${flavor}: dumped ${rows} rows across ${chunks} chunks into ${outDir}/${flavor}.sql(-2,-3,…)`);
-  console.log(`${flavor}: import with:`);
-  console.log(`  for f in ${outDir}/${flavor}.sql ${outDir}/${flavor}-*.sql; do case "$f" in *reconcile*) continue;; esac; npx wrangler d1 execute api-relaton-org --remote --file="$f" --yes; done`);
+  console.log(`${flavor}: import with (numeric order — a glob sorts iso-10 before iso-2 and iso.sql last, which FK-fails):`);
+  console.log(`  npx wrangler d1 execute api-relaton-org --remote --file=${outDir}/${flavor}.sql --yes`);
+  console.log(`  i=2; while [ -f ${outDir}/${flavor}-$i.sql ]; do npx wrangler d1 execute api-relaton-org --remote --file=${outDir}/${flavor}-$i.sql --yes; i=$((i+1)); done`);
   console.log(`  npx wrangler d1 execute api-relaton-org --remote --file=${outDir}/${flavor}-reconcile.sql --yes`);
 }
 
