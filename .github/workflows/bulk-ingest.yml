@@ -112,8 +112,13 @@ jobs:
           indexed=$(npx wrangler@4 d1 execute api-relaton-org --remote \
             --command "SELECT indexed_at FROM flavors_v2 WHERE flavor='${flavor}'" \
             --json | jq -r '.[0].results[0].indexed_at')
-          echo "indexed_at=$indexed (wave started $before)"
-          if [ -z "$indexed" ] || [ "$indexed" == "null" ] || [[ "$indexed" < "$before" ]]; then
+          # Normalize for string compare: 2026-...T18:58:42.698Z sorts
+          # BEFORE 2026-...T18:58:42Z lexically ('.' < 'Z') - the etsi
+          # NUL-fix run had a fresh timestamp the raw compare called stale.
+          indexed_norm="${indexed%%.*}"
+          case "$indexed_norm" in *Z) ;; *) indexed_norm="${indexed_norm}Z";; esac
+          echo "indexed_at=$indexed (normalized $indexed_norm; wave started $before)"
+          if [ -z "$indexed" ] || [ "$indexed" == "null" ] || [[ "$indexed_norm" < "$before" ]]; then
             echo "flavors_v2.indexed_at for ${flavor} is stale — the import tail was lost"
             exit 1
           fi
