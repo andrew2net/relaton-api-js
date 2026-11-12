@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
-import { buildIngestStatements, type SqlStatement } from "../lib/ingest_sql";
+import { buildIngestStatements, buildReconcileStatements, type SqlStatement } from "../lib/ingest_sql";
 import {
   deriveSearchRow,
   projectClassifications,
@@ -341,14 +341,14 @@ adminRoutes.post("/admin/reconcile-v2/:flavor", async (c) => {
     `SELECT COUNT(*) AS n FROM documents_v2 WHERE ${stale}`,
   ).bind(flavor, before).first<{ n: number }>();
 
-  await c.env.DB.batch([
-    c.env.DB.prepare(`DELETE FROM doc_keys WHERE document IN (SELECT key FROM documents_v2 WHERE ${stale})`).bind(flavor, before),
-    c.env.DB.prepare(`DELETE FROM documents_v2 WHERE ${stale}`).bind(flavor, before),
-    c.env.DB.prepare(
-      `UPDATE flavors_v2 SET doc_count = (SELECT COUNT(*) FROM documents_v2 WHERE flavor = ?1)
-       WHERE flavor = ?1`,
-    ).bind(flavor),
-  ]);
+  // Same bounded-delete shape the bulk path renders (ingest_sql.ts): a
+  // flavor-wide DELETE with cascades is too heavy in one statement.
+  const stmts = buildReconcileStatements(flavor, before).map((st) =>
+    c.env.DB.prepare(st.sql).bind(...st.binds),
+  );
+  for (let i = 0; i < stmts.length; i += 50) {
+    await c.env.DB.batch(stmts.slice(i, i + 50));
+  }
 
   return c.json({ flavor, before, deleted: doomed?.n ?? 0 });
 });

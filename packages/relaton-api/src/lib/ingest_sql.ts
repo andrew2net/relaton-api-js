@@ -196,23 +196,34 @@ export function buildIngestStatements(chunk: IngestChunkLike, ingestedAt: string
 }
 
 // The ghost cleanup for a full wave: everything the flavor's walk never
-// re-stamped since `before`, plus the flavor's row tally. Mirrors the
-// worker's /admin/reconcile-v2 exactly.
+// re-stamped since `before`, plus the flavor's row tally. The deletes run
+// in bounded rounds (500 keys per statement) because a flavor-wide DELETE
+// with FK cascades is too heavy for the D1 import endpoint — the gateway
+// kills it at ~60s with "Upstream service unavailable [code: 7009]"
+// (twice, deterministically, on the 2026-11-12 iso leg) while the same
+// endpoint handles the 40MB data files fine, since their statements are
+// bounded. Extra rounds are no-ops once the stale set is exhausted.
 export function buildReconcileStatements(flavor: string, before: string): SqlStatement[] {
   const stale = `flavor = ?1 AND (indexed_at IS NULL OR indexed_at < ?2)`;
-  return [
-    {
-      sql: `DELETE FROM doc_keys WHERE document IN (SELECT key FROM documents_v2 WHERE ${stale})`,
+  const ROUNDS = 100;
+  const BATCH = 500;
+  const stmts: SqlStatement[] = [];
+  for (let r = 0; r < ROUNDS; r++) {
+    stmts.push({
+      sql: `DELETE FROM doc_keys WHERE document IN (SELECT key FROM documents_v2 WHERE ${stale} LIMIT ${BATCH})`,
       binds: [flavor, before],
-    },
-    {
-      sql: `DELETE FROM documents_v2 WHERE ${stale}`,
+    });
+  }
+  for (let r = 0; r < ROUNDS; r++) {
+    stmts.push({
+      sql: `DELETE FROM documents_v2 WHERE key IN (SELECT key FROM documents_v2 WHERE ${stale} LIMIT ${BATCH})`,
       binds: [flavor, before],
-    },
-    {
-      sql: `UPDATE flavors_v2 SET doc_count = (SELECT COUNT(*) FROM documents_v2 WHERE flavor = ?1)
+    });
+  }
+  stmts.push({
+    sql: `UPDATE flavors_v2 SET doc_count = (SELECT COUNT(*) FROM documents_v2 WHERE flavor = ?1)
        WHERE flavor = ?1`,
-      binds: [flavor],
-    },
-  ];
+    binds: [flavor],
+  });
+  return stmts;
 }

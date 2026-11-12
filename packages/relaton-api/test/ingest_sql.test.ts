@@ -61,11 +61,17 @@ describe("buildIngestStatements", () => {
 });
 
 describe("buildReconcileStatements", () => {
-  it("deletes stale rows and recounts the flavor", () => {
+  it("deletes stale rows in bounded rounds and recounts the flavor", () => {
     const stmts = buildReconcileStatements("iso", "2026-11-12T00:00:00Z");
-    expect(stmts).toHaveLength(3);
-    expect(stmts[0]!.sql).toContain("DELETE FROM doc_keys");
-    expect(stmts[1]!.sql).toContain("DELETE FROM documents_v2");
-    expect(stmts[2]!.sql).toContain("doc_count");
+    const docKeyDeletes = stmts.filter((s) => s.sql.includes("DELETE FROM doc_keys"));
+    const docDeletes = stmts.filter((s) => s.sql.includes("DELETE FROM documents_v2"));
+    // a flavor-wide DELETE with FK cascades times the D1 import endpoint
+    // out (~60s, code 7009) - the deletes must be bounded rounds
+    expect(docKeyDeletes.length).toBeGreaterThan(10);
+    expect(docDeletes.length).toBeGreaterThan(10);
+    expect(docKeyDeletes.every((s) => s.sql.includes("LIMIT 500"))).toBe(true);
+    expect(docDeletes.every((s) => s.sql.includes("LIMIT 500"))).toBe(true);
+    expect(stmts.at(-1)!.sql).toContain("doc_count");
+    for (const s of stmts) expect(s.binds.length).toBeLessThanOrEqual(2);
   });
 });
