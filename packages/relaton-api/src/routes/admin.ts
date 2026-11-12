@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
+import { buildIngestStatements, type SqlStatement } from "../lib/ingest_sql";
 import {
   deriveSearchRow,
   projectClassifications,
@@ -110,151 +111,16 @@ adminRoutes.post("/admin/ingest-v2/:flavor", async (c) => {
 
   const ingestedAt = new Date().toISOString();
 
-  // The ingest writes batched: one multi-row upsert per ~90 binds, one
-  // chunk-wide projection delete, one multi-row insert per projection —
-  // ~50 statements for a 100-row chunk instead of ~2,500 per-row ones, so
-  // a heavy flavor's walk fits the runner cap instead of D1 round-trips.
-  const BIND_CAP = 90;
-
-  function insertStatements(table: string, columns: string[], tuples: unknown[][]): D1PreparedStatement[] {
-    if (!tuples.length) return [];
-    const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
-    const rowSql = `(${columns.map(() => "?").join(", ")})`;
-    const out: D1PreparedStatement[] = [];
-    for (let i = 0; i < tuples.length; i += perStmt) {
-      const group = tuples.slice(i, i + perStmt);
-      out.push(
-        c.env.DB.prepare(
-          `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${group.map(() => rowSql).join(", ")}`,
-        ).bind(...group.flat()),
-      );
-    }
-    return out;
-  }
-
-  function deleteByDocuments(table: string, keys: string[]): D1PreparedStatement[] {
-    const out: D1PreparedStatement[] = [];
-    for (let i = 0; i < keys.length; i += BIND_CAP) {
-      const group = keys.slice(i, i + BIND_CAP);
-      out.push(
-        c.env.DB.prepare(`DELETE FROM ${table} WHERE document IN (${group.map((_, j) => `?${j + 1}`).join(", ")})`)
-          .bind(...group),
-      );
-    }
-    return out;
-  }
-
-  // Multi-row upsert by a primary key; `hold` columns are written on
-  // insert but never clobbered by an update (embedded_at is the embed
-  // cursor, not a projection of data).
-  function upsertStatements(table: string, columns: string[], pk: string, hold: string[], tuples: unknown[][]): D1PreparedStatement[] {
-    if (!tuples.length) return [];
-    const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
-    const rowSql = `(${columns.map(() => "?").join(", ")})`;
-    const updateSet = columns.filter((col) => col !== pk && !hold.includes(col))
-      .map((col) => `${col} = excluded.${col}`).join(", ");
-    const out: D1PreparedStatement[] = [];
-    for (let i = 0; i < tuples.length; i += perStmt) {
-      const group = tuples.slice(i, i + perStmt);
-      out.push(
-        c.env.DB.prepare(
-          `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${group.map(() => rowSql).join(", ")}
-           ON CONFLICT (${pk}) DO UPDATE SET ${updateSet}`,
-        ).bind(...group.flat()),
-      );
-    }
-    return out;
-  }
-
-  const chunkKeys = chunk.rows.map((r) => r.key);
-  const stmts: D1PreparedStatement[] = [];
-
-  // Multi-row upsert: SQLite applies VALUES rows sequentially, so a key
-  // repeated within one statement (the producer dedupes, but be safe)
-  // updates cleanly.
-  {
-    const columns = ["key", "flavor", "file", "data", "indexed_at"];
-    const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
-    const rowSql = `(${columns.map(() => "?").join(", ")})`;
-    for (let i = 0; i < chunk.rows.length; i += perStmt) {
-      const group = chunk.rows.slice(i, i + perStmt);
-      stmts.push(
-        c.env.DB.prepare(
-          `INSERT INTO documents_v2 (key, flavor, file, data, indexed_at)
-           VALUES ${group.map(() => rowSql).join(", ")}
-           ON CONFLICT (key) DO UPDATE SET
-             flavor = excluded.flavor, file = excluded.file, data = excluded.data,
-             indexed_at = excluded.indexed_at`,
-        ).bind(...group.flatMap((r) => [r.key, flavor, r.file, JSON.stringify(r.data), ingestedAt])),
-      );
-    }
-  }
-
-  // The query-side projection (migration 0009): derived mechanically from
-  // the same data, so the search/collections surfaces read one source of
-  // truth. FTS rows ride the table's triggers.
-  stmts.push(...upsertStatements(
-    "documents_search",
-    ["key", "flavor", "file", "docid", "title", "year", "doctype", "status", "abstract",
-      "norm", "undated_norm", "allparts_norm", "publisher", "number", "part", "edition"],
-    "key",
-    ["embedded_at", "publisher", "number", "part"],
-    chunk.rows.map((r) => {
-      const s = deriveSearchRow(r.key, flavor, r.file, r.data);
-      return [s.key, s.flavor, s.file, s.docid, s.title, s.year, s.doctype, s.status, s.abstract,
-        s.norm, s.undated_norm, s.allparts_norm, s.publisher, s.number, s.part, s.edition];
-    }),
-  ));
-
-  stmts.push(...deleteByDocuments("doc_keys", chunkKeys));
-  stmts.push(...insertStatements(
-    "doc_keys",
-    ["key", "document"],
-    chunk.rows.flatMap((r) => r.keys.map((k) => [k, r.key])),
-  ));
-
-  const projected: [string, string[], unknown[][]][] = [
-    ["titles", ["document", "lang", "type", "text"],
-      chunk.rows.flatMap((r) => projectTitles(r.data).map((t) => [r.key, t.lang, t.type, t.text]))],
-    ["identifiers", ["document", "raw", "type", "is_primary"],
-      chunk.rows.flatMap((r) => projectIdentifiers(r.data).map((i) => [r.key, i.raw, i.type, i.isPrimary]))],
-    ["dates", ["document", "type", "on_date"],
-      chunk.rows.flatMap((r) => projectDates(r.data).map((d) => [r.key, d.type, d.onDate]))],
-    ["contributors", ["document", "role", "name", "org_abbrev"],
-      chunk.rows.flatMap((r) => projectContributors(r.data).map((p) => [r.key, p.role, p.name, p.orgAbbrev]))],
-    ["relations", ["document", "type", "target"],
-      chunk.rows.flatMap((r) => projectRelations(r.data).map((r2) => [r.key, r2.type, r2.target]))],
-    ["classifications", ["document", "type", "value"],
-      chunk.rows.flatMap((r) => projectClassifications(r.data).map((cl) => [r.key, cl.type, cl.value]))],
-  ];
-  for (const [table, columns, tuples] of projected) {
-    stmts.push(...deleteByDocuments(table, chunkKeys));
-    stmts.push(...insertStatements(table, columns, tuples));
-  }
-
-  if (chunk.final) {
-    stmts.push(
-      c.env.DB.prepare(
-        `INSERT INTO flavors_v2 (flavor, repo, last_modified, indexed_at, doc_count)
-         VALUES (?1, ?2, ?3, ?4, (SELECT COUNT(*) FROM documents_v2 WHERE flavor = ?1))
-         ON CONFLICT (flavor) DO UPDATE SET
-           repo = excluded.repo, last_modified = excluded.last_modified,
-           indexed_at = excluded.indexed_at, doc_count = excluded.doc_count`,
-      ).bind(flavor, chunk.repo, chunk.lastModified ?? null, ingestedAt),
-    );
-    if (chunk.relatonVersion) {
-      stmts.push(
-        c.env.DB.prepare(
-          `INSERT INTO meta (key, value) VALUES ('relaton_version', ?1)
-           ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-        ).bind(chunk.relatonVersion),
-      );
-    }
-  }
+  // The ingest write shape lives in lib/ingest_sql.ts - one builder, two
+  // consumers: this route executes the statements through D1 batched
+  // prepared statements, and the CLI's --dump-sql mode renders the same
+  // statements as literals for `wrangler d1 import` (relaton-api-js#137).
+  const stmts: SqlStatement[] = buildIngestStatements(chunk, ingestedAt);
+  const d1Stmts = stmts.map((st) => c.env.DB.prepare(st.sql).bind(...st.binds));
 
   try {
     for (let i = 0; i < stmts.length; i += 90) {
-      await c.env.DB.batch(stmts.slice(i, i + 90));
+      await c.env.DB.batch(d1Stmts.slice(i, i + 90));
     }
   } catch (e) {
     console.error(`ingest-v2 batch failed for flavor ${flavor}: ${String(e)}`);
