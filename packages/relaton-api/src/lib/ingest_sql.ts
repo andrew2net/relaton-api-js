@@ -42,38 +42,58 @@ export interface SqlStatement {
 }
 
 const BIND_CAP = 90;
+// D1 rejects any single SQL statement longer than 100KB ("Statement too
+// long" — the documented large-import failure). The bind cap alone lets
+// a group of documents with large JSON blow through it, so groups flush
+// by estimated rendered bytes too. A single row over the cap cannot be
+// split further; the chunk-level failure path handles it.
+const STMT_BYTE_CAP = 90_000;
+
+function tupleBytes(t: unknown[]): number {
+  let n = 2;
+  for (const v of t) n += typeof v === "string" ? v.length + 2 : String(v ?? "NULL").length;
+  return n;
+}
+
+function groupTuples(tuples: unknown[][], maxRows: number): unknown[][][] {
+  const groups: unknown[][][] = [];
+  let group: unknown[][] = [];
+  let bytes = 0;
+  for (const t of tuples) {
+    const b = tupleBytes(t);
+    if (group.length && (group.length >= maxRows || bytes + b > STMT_BYTE_CAP)) {
+      groups.push(group);
+      group = [];
+      bytes = 0;
+    }
+    group.push(t);
+    bytes += b;
+  }
+  if (group.length) groups.push(group);
+  return groups;
+}
 
 function multiRowUpsert(table: string, columns: string[], pk: string, hold: string[], tuples: unknown[][]): SqlStatement[] {
   if (!tuples.length) return [];
-  const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
+  const maxRows = Math.max(1, Math.floor(BIND_CAP / columns.length));
   const rowSql = `(${columns.map(() => "?").join(", ")})`;
   const updateSet = columns.filter((col) => col !== pk && !hold.includes(col))
     .map((col) => `${col} = excluded.${col}`).join(", ");
-  const out: SqlStatement[] = [];
-  for (let i = 0; i < tuples.length; i += perStmt) {
-    const group = tuples.slice(i, i + perStmt);
-    out.push({
-      sql: `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${group.map(() => rowSql).join(", ")}
+  return groupTuples(tuples, maxRows).map((group) => ({
+    sql: `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${group.map(() => rowSql).join(", ")}
            ON CONFLICT (${pk}) DO UPDATE SET ${updateSet}`,
-      binds: group.flat(),
-    });
-  }
-  return out;
+    binds: group.flat(),
+  }));
 }
 
 function multiRowInsert(table: string, columns: string[], tuples: unknown[][]): SqlStatement[] {
   if (!tuples.length) return [];
-  const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
+  const maxRows = Math.max(1, Math.floor(BIND_CAP / columns.length));
   const rowSql = `(${columns.map(() => "?").join(", ")})`;
-  const out: SqlStatement[] = [];
-  for (let i = 0; i < tuples.length; i += perStmt) {
-    const group = tuples.slice(i, i + perStmt);
-    out.push({
-      sql: `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${group.map(() => rowSql).join(", ")}`,
-      binds: group.flat(),
-    });
-  }
-  return out;
+  return groupTuples(tuples, maxRows).map((group) => ({
+    sql: `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${group.map(() => rowSql).join(", ")}`,
+    binds: group.flat(),
+  }));
 }
 
 function deleteByDocuments(table: string, keys: string[]): SqlStatement[] {
@@ -100,17 +120,17 @@ export function buildIngestStatements(chunk: IngestChunkLike, ingestedAt: string
 
   {
     const columns = ["key", "flavor", "file", "data", "indexed_at"];
-    const perStmt = Math.max(1, Math.floor(BIND_CAP / columns.length));
+    const maxRows = Math.max(1, Math.floor(BIND_CAP / columns.length));
     const rowSql = `(${columns.map(() => "?").join(", ")})`;
-    for (let i = 0; i < chunk.rows.length; i += perStmt) {
-      const group = chunk.rows.slice(i, i + perStmt);
+    const tuples = chunk.rows.map((r) => [r.key, r.file, JSON.stringify(r.data)]);
+    for (const group of groupTuples(tuples, maxRows)) {
       stmts.push({
         sql: `INSERT INTO documents_v2 (key, flavor, file, data, indexed_at)
            VALUES ${group.map(() => rowSql).join(", ")}
            ON CONFLICT (key) DO UPDATE SET
              flavor = excluded.flavor, file = excluded.file, data = excluded.data,
              indexed_at = excluded.indexed_at`,
-        binds: group.flatMap((r) => [r.key, flavor, r.file, JSON.stringify(r.data), ingestedAt]),
+        binds: group.flatMap((t) => [t[0], flavor, t[1], t[2], ingestedAt]),
       });
     }
   }
