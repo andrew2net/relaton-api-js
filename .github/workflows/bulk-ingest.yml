@@ -35,7 +35,9 @@ jobs:
         # limits turned into silent walk losses (2026-11-12 iso).
         run: git clone --depth 1 --single-branch "https://github.com/relaton/relaton-data-${{ inputs.flavor }}" data-clone
       - name: Dump the flavor's machine index to SQL
+        id: dump
         run: |
+          echo "before=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           node packages/relaton-api/bin/relaton-api.mjs ingest "${{ inputs.flavor }}" \
             --v2 --dump-sql bulk-sql/ --data-clone data-clone
       - name: Import the data files
@@ -93,3 +95,25 @@ jobs:
           done
           echo "import of $rec failed after 3 attempts"
           exit 1
+      - name: Verify the flavor row is fresh
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # Wrangler's sql.ingest can silently drop a file's tail ("Warning:
+        # leftover buffer", 2026-11-12 etsi: the last ~3.4k rows and the
+        # final chunk's flavors_v2 upsert never executed, and the leg still
+        # exited 0 - the reconcile then deleted the missing keys as
+        # ghosts). The flavors_v2 upsert sits at the file tail, so a fresh
+        # indexed_at proves the tail landed.
+        run: |
+          set -e
+          flavor="${{ inputs.flavor }}"
+          before="${{ steps.dump.outputs.before }}"
+          indexed=$(npx wrangler@4 d1 execute api-relaton-org --remote \
+            --command "SELECT indexed_at FROM flavors_v2 WHERE flavor='${flavor}'" \
+            --json | jq -r '.[0].results[0].indexed_at')
+          echo "indexed_at=$indexed (wave started $before)"
+          if [ -z "$indexed" ] || [ "$indexed" == "null" ] || [[ "$indexed" < "$before" ]]; then
+            echo "flavors_v2.indexed_at for ${flavor} is stale — the import tail was lost"
+            exit 1
+          fi

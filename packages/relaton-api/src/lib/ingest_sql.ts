@@ -45,9 +45,14 @@ const BIND_CAP = 90;
 // D1 rejects any single SQL statement longer than 100KB ("Statement too
 // long" — the documented large-import failure). The bind cap alone lets
 // a group of documents with large JSON blow through it, so groups flush
-// by estimated rendered bytes too. A single row over the cap cannot be
-// split further; the chunk-level failure path handles it.
-const STMT_BYTE_CAP = 90_000;
+// by estimated rendered bytes too. 48KB rather than a 90KB ceiling: the
+// 2026-11-12 etsi leg lost the tail of its last file to wrangler's
+// sql.ingest ("Warning: leftover buffer" — the import stalled on a
+// ~60KB multi-row documents_search INSERT and silently dropped the
+// statements after it), and smaller statements keep the splitter away
+// from that edge. A single row over the cap cannot be split further;
+// the chunk-level failure path handles it.
+const STMT_BYTE_CAP = 48_000;
 
 function tupleBytes(t: unknown[]): number {
   let n = 2;

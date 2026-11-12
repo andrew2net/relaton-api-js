@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildIngestStatements, buildReconcileStatements, type IngestChunkLike } from "../src/lib/ingest_sql";
 
-// D1 rejects any single SQL statement longer than 100KB, so every
-// statement the builder emits must stay under it — including the
-// documents_v2 upserts whose data column carries full document JSON.
-const STMT_BYTE_CAP = 90_000;
+// D1 rejects any single SQL statement longer than 100KB, and wrangler's
+// sql.ingest splitter stalls on statements near that size (the 2026-11-12
+// etsi leg lost a file's tail to it) — the builder caps at 48KB.
+const STMT_BYTE_CAP = 48_000;
 
 function row(key: string, dataBytes = 100): { key: string; file: string; data: Record<string, unknown>; keys: string[] } {
   return {
