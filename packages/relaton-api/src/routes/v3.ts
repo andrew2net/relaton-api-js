@@ -5,6 +5,11 @@ import { getDocument, getDocumentByDocid, getDocumentByLookupKey, pageSummaries,
 // Deep path: self-contained and extension-free, loadable under plain node
 // as well as the bundler (same import discipline produce.ts uses).
 import { normKey } from "../pubid/keys.ts";
+// The pubid-scheme slug resolver: the flavor-type registrations (worker-safe
+// set) and the fs-free pubid-urn module. Deep import: the package root drags
+// the corpus loader, which statically imports node:fs.
+import { fromSlug } from "@pubid/pubid/dist/pubid-urn/index.js";
+import "../lib/slug_registry";
 
 // API v3 (TODO.api/03): the modern surface over the storage v2 loader —
 // content negotiation, RFC 9457 problem+json errors, strong ETags with
@@ -55,6 +60,25 @@ function ifNoneMatchSatisfied(header: string | undefined, etag: string): boolean
 
 function yamlOf(data: Record<string, unknown>): string {
   return dumpYaml(data, { lineWidth: -1 });
+}
+
+// The pubid-scheme slug form (relaton#441): "/"-joined segments parse back
+// to the identifier structurally (engine-free), and the identifier's
+// canonical render runs the standard resolution chain. A slug of an
+// unregistered flavor (nist, ieee — see slug_registry) answers null like
+// any other miss.
+async function getDocumentBySlug(db: D1Database, keyText: string): Promise<StorageV2Doc | null> {
+  if (!keyText.includes("/")) return null;
+  let render: string;
+  try {
+    render = fromSlug(keyText).render();
+  } catch {
+    return null;
+  }
+  return (await getDocument(db, render))
+    ?? (await getDocumentByLookupKey(db, normKey(render)))
+    ?? (await getDocumentByLookupKey(db, normKey(render).replace(/-/g, "")))
+    ?? (await getDocumentByDocid(db, render));
 }
 
 const keyRoute = createRoute({
@@ -133,12 +157,18 @@ v3Routes.openapi(keyRoute, async (c) => {
   const { format } = c.req.valid("query");
   // Exact key first; then the normalized lookup token (doc_keys carries
   // the dataset's normKey forms), then the hyphen-stripped form — "rfc 8446"
-  // and "RFC-8446" resolve like "RFC 8446" does (site issue #26).
+  // and "RFC-8446" resolve like "RFC 8446" does (site issue #26). Last, the
+  // pubid-scheme slug form (relaton#441): "/"-joined segments parse back to
+  // the identifier structurally, and the identifier's canonical render runs
+  // the same resolution chain. The slug parse is engine-free (pure schema
+  // decode), so it is worker-safe; anything that is not a canonical slug
+  // raises and answers null like any other miss.
   const keyText = decodeURIComponent(key);
   const doc = (await getDocument(c.env.DB, keyText))
     ?? (await getDocumentByLookupKey(c.env.DB, normKey(keyText)))
     ?? (await getDocumentByLookupKey(c.env.DB, normKey(keyText).replace(/-/g, "")))
-    ?? (await getDocumentByDocid(c.env.DB, keyText));
+    ?? (await getDocumentByDocid(c.env.DB, keyText))
+    ?? (await getDocumentBySlug(c.env.DB, keyText));
   if (!doc) return problem(c, 404, "Not Found", `unknown key ${keyText}`);
 
   const type = negotiate(c.req.header("Accept"), format);
