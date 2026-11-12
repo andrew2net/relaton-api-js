@@ -42,12 +42,22 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # Numeric order, never a glob: the dump rotates iso.sql, iso-2.sql,
+        # ... and a lexicographic glob imports iso-10 first and iso.sql
+        # last — child rows (doc_keys, projections) would land before their
+        # documents_v2 parents and trip the FK constraint (2026-11-12 iso).
         run: |
           set -e
-          for f in bulk-sql/${{ inputs.flavor }}*.sql; do
-            case "$f" in *reconcile*) continue;; esac
-            echo "importing $f"
-            npx wrangler@4 d1 execute api-relaton-org --remote --file="$f" --yes
+          flavor="${{ inputs.flavor }}"
+          import_one() {
+            echo "importing $1"
+            npx wrangler@4 d1 execute api-relaton-org --remote --file="$1" --yes
+          }
+          import_one "bulk-sql/${flavor}.sql"
+          i=2
+          while [ -f "bulk-sql/${flavor}-${i}.sql" ]; do
+            import_one "bulk-sql/${flavor}-${i}.sql"
+            i=$((i+1))
           done
       - name: Import the reconciler
         env:
