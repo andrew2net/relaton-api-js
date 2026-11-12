@@ -154,7 +154,12 @@ class FetchGate {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const RETRY_DELAYS_MS = [2_000, 8_000, 30_000];
+// Dataset fetches run from CI runners whose egress IPs are shared fleet
+// wide - raw.githubusercontent 429s them for minutes at a time when the
+// fleet is busy, and the walk's own burst makes it worse. Three quick
+// retries could not outlast that (the 2026-11-12 iso walk skipped every
+// row past ~2,500): the default budget now reaches minute-scale waits.
+const RETRY_DELAYS_MS = [2_000, 8_000, 30_000, 60_000, 120_000, 300_000];
 
 async function pullWithRetry(
   fetchImpl: typeof fetch,
@@ -227,21 +232,39 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
   const engine = opts.engine ?? (await flavorEngine(opts.flavor));
 
   const manifest = await pull(fetchImpl, `${pages}/index/manifest.json`)
-    .then((r) => r.json() as Promise<{ shards: number; index?: string }>);
+    .then((r) => r.json() as Promise<{ shards: number; index?: string; count?: number }>);
   if (!Number.isInteger(manifest.shards) || manifest.shards < 0) throw new Error("manifest has no shard count");
   log(`manifest ok, shards=${manifest.shards}`);
 
   const shardRows: { r: string; idHash?: Record<string, unknown>; file: string }[] = [];
   if (manifest.shards > 0) {
     const PROBE = 24;
+    // Shard enumeration goes through the same throttle/retry gate as the
+    // datasets, and a shard that still will not load is FATAL: the manifest
+    // promises it, so walking with a fraction of the index would silently
+    // ingest a fraction of the flavor (the 2026-11-12 iso walk enumerated
+    // 87k of 242k rows this way - 16k shard fetches at ~300/s dropped 64%
+    // without a single log line - and posted its slice as if it were the
+    // flavor).
+    let unfetched = 0;
     for (let i = 0; i < manifest.shards; i += PROBE) {
       const names: string[] = [];
       for (let s = i; s < Math.min(i + PROBE, manifest.shards); s++) names.push(`shard-${String(s).padStart(5, "0")}.json`);
       const bodies = await Promise.all(
-        names.map((n) => fetchImpl(`${pages}/index/${n}`).then((r) => (r.ok ? (r.json() as Promise<{ r: string; id?: Record<string, unknown>; file: string }[]>) : null))),
+        names.map((n) =>
+          pullWithRetry(fetchImpl, `${pages}/index/${n}`, gate, log, retryDelaysMs)
+            .then((r) => r.json() as Promise<{ r: string; id?: Record<string, unknown>; file: string }[]>)
+            .catch(() => null),
+        ),
       );
       for (const rows of bodies)
         if (rows) shardRows.push(...rows.map((row) => ({ ...row, idHash: row.id })));
+        else unfetched += 1;
+    }
+    if (unfetched > 0) {
+      throw new Error(
+        `machine index enumeration incomplete: ${unfetched} of ${manifest.shards} shards unfetchable after backoff`,
+      );
     }
   } else {
     // Below the sharding threshold the contract publishes no shard files —
@@ -254,6 +277,17 @@ export async function* produceV2Chunks(opts: ProduceOptions): AsyncGenerator<V2C
     }
   }
   log(`${shardRows.length} index rows${manifest.shards === 0 ? ` (from ${manifest.index}.yaml — below the sharding threshold)` : ""}`);
+
+  // Completeness gate: the manifest's `count` is the index generation's own
+  // row tally. A walk that enumerated materially fewer rows would ingest a
+  // fraction of the flavor as if it were the whole - fail loudly instead
+  // (the gate catches shard-fetch losses the per-shard fatal above cannot,
+  // e.g. a shard file that loads but was truncated at the publisher).
+  if (manifest.count && shardRows.length < manifest.count * 0.995) {
+    throw new Error(
+      `machine index enumeration incomplete: ${shardRows.length} of ${manifest.count} rows`,
+    );
+  }
 
   // Some datasets map several keys to one file (IANA sub-registries live
   // inside the registry document); the first key wins the document, the

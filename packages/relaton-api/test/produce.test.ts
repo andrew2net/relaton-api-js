@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { produceV2Chunks, type ProduceOptions } from "../src/ingest/produce";
 
-const MANIFEST = JSON.stringify({ version: 2, shards: 2, count: 4 });
+const MANIFEST = JSON.stringify({ version: 2, shards: 1, count: 2 });
 
 const YAML_DOC = (id: string) =>
   `---
@@ -52,7 +52,7 @@ async function collect(opts: ProduceOptions) {
   return chunks;
 }
 
-describe("produceV2Chunks", () => {
+describe("produceV2Chunks", { timeout: 60_000 }, () => {
   it("turns machine-index rows into v2 rows: model JSON in, normalized key out", async () => {
     const chunks = await collect(options({ chunkSize: 10 }));
     expect(chunks).toHaveLength(1);
@@ -254,6 +254,84 @@ describe("produceV2Chunks", () => {
     expect(logs.some((m) => m.includes("carries no structured id"))).toBe(true);
   });
 
+  it("fails loudly when a shard cannot be fetched after backoff", async () => {
+    const opts = options({ chunkSize: 10, retryDelaysMs: [1, 1, 1] });
+    opts.fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("manifest.json")) return new Response(JSON.stringify({ version: 2, shards: 2, count: 2 }));
+      const shard = url.match(/(shard-\d{5}\.json)$/)?.[1];
+      // shard-00001 never loads: the manifest promises it, so the walk
+      // must abort instead of ingesting a fraction of the flavor.
+      if (shard === "shard-00001.json") return new Response("no", { status: 404 });
+      if (shard) return new Response(JSON.stringify(shards[shard]));
+      const file = url.split("/").slice(-2).join("/");
+      if (file in docs) return new Response(docs[file]);
+      return new Response("no", { status: 404 });
+    }) as typeof fetch;
+    const shards: Record<string, unknown> = {
+      "shard-00000.json": [{ r: "RFC 8446", file: "data/rfc8446.yaml" }],
+      "shard-00001.json": [{ r: "RFC 3986", file: "data/rfc3986.yaml" }],
+    };
+    const docs: Record<string, string> = { "data/rfc8446.yaml": YAML_DOC("RFC 8446") };
+    await expect(collect(opts)).rejects.toThrow(/enumeration incomplete.*1 of 2 shards/);
+  });
+
+  it("fails loudly when enumeration is materially below the manifest count", async () => {
+    // A shard file that loads but was truncated at the publisher: fewer
+    // rows than the manifest's own tally. The per-shard fatal above cannot
+    // see this; the completeness gate must.
+    const opts = options({ chunkSize: 10 });
+    opts.fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("manifest.json")) {
+        return new Response(JSON.stringify({ version: 2, shards: 1, count: 400 }));
+      }
+      const shard = url.match(/(shard-\d{5}\.json)$/)?.[1];
+      if (shard) {
+        const rows = shards[shard] as unknown[];
+        return new Response(JSON.stringify(rows.slice(0, 2))); // 2 of 400
+      }
+      const file = url.split("/").slice(-2).join("/");
+      if (file in docs) return new Response(docs[file]);
+      return new Response("no", { status: 404 });
+    }) as typeof fetch;
+    const shards: Record<string, unknown> = {
+      "shard-00000.json": Array.from({ length: 400 }, (_, i) => ({ r: `RFC ${i}`, file: `data/rfc${i}.yaml` })),
+    };
+    const docs: Record<string, string> = { "data/rfc0.yaml": YAML_DOC("RFC 0") };
+    await expect(collect(opts)).rejects.toThrow(/enumeration incomplete.*of 400 rows/);
+  });
+
+  it("retries a throttled shard fetch instead of dropping the shard", async () => {
+    const opts = options({ chunkSize: 10, retryDelaysMs: [1, 1, 1] });
+    let shardFetches = 0;
+    opts.fetchImpl = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith("manifest.json")) return new Response(MANIFEST);
+      const shard = url.match(/(shard-\d{5}\.json)$/)?.[1];
+      if (shard) {
+        shardFetches += 1;
+        if (shardFetches === 1) return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
+        if (!(shard in shards)) return new Response("no", { status: 404 });
+        return new Response(JSON.stringify(shards[shard]));
+      }
+      const file = url.split("/").slice(-2).join("/");
+      if (file in docs) return new Response(docs[file]);
+      return new Response("no", { status: 404 });
+    }) as typeof fetch;
+    const shards: Record<string, unknown> = {
+      "shard-00000.json": [{ r: "RFC 8446", file: "data/rfc8446.yaml" }, { r: "RFC 3986", file: "data/rfc3986.yaml" }],
+    };
+    const docs: Record<string, string> = {
+      "data/rfc8446.yaml": YAML_DOC("RFC 8446"),
+      "data/rfc3986.yaml": YAML_DOC("RFC 3986"),
+    };
+    const chunks = await collect(opts);
+    expect(shardFetches).toBe(2);
+    expect(chunks[0]!.rows).toHaveLength(2);
+    expect(chunks[0]!.final).toBe(true);
+  });
+
   it("does not stamp final when maxRows truncates the wave", async () => {
     const chunks = await collect(options({ chunkSize: 1, maxRows: 1 }));
     expect(chunks).toHaveLength(1);
@@ -303,7 +381,7 @@ describe("produceV2Chunks", () => {
     let rfc1Fetches = 0;
     opts.fetchImpl = (async (input: string | URL) => {
       const url = String(input);
-      if (url.endsWith("manifest.json")) return new Response(MANIFEST);
+      if (url.endsWith("manifest.json")) return new Response(JSON.stringify({ version: 2, shards: 1, count: 1 }));
       const shard = url.match(/(shard-\d{5}\.json)$/)?.[1];
       if (shard) {
         if (!(shard in shards)) return new Response("no", { status: 404 });
