@@ -507,7 +507,7 @@ ${asciibib ? `
   const panes: string[] = [];
   const addTab = (id: string, label: string, contentHtml: string, rawText: string) => {
     const first = tabs.length === 0;
-    tabs.push(`<button class="tab-btn" id="tab-btn-${id}" role="tab" aria-selected="${first}" aria-controls="pane-${id}" data-pane="pane-${id}">${label}</button>`);
+    tabs.push(`<button class="tab-btn" id="tab-btn-${id}" role="tab" aria-selected="${first}" aria-controls="pane-${id}" data-pane="${id}">${label}</button>`);
     panes.push(`<div class="pane-wrap" id="wrap-${id}"${first ? "" : " hidden"}><div class="pane-bar"><button type="button" class="copy-btn" data-copy-text="${escapeHtml(rawText)}">Copy ${label}</button></div><pre id="pane-${id}" role="tabpanel" aria-labelledby="tab-btn-${id}">${contentHtml}</pre></div>`);
   };
 
