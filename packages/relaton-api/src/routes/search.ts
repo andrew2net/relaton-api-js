@@ -11,7 +11,7 @@ import * as v2 from "../lib/search2";
 const CSS = `
   .search-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 28px; align-items: start; }
   @media (max-width: 900px) { .search-layout { grid-template-columns: minmax(0, 1fr); } }
-  .search-bar { display: flex; gap: 8px; margin: 0 0 18px; }
+  .search-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
   .search-bar input[name=q] {
     flex: 1; padding: 10px 14px; font-size: 15px; font-family: var(--mono);
     border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg);
@@ -20,7 +20,8 @@ const CSS = `
     border-radius: 8px; background: var(--bg); color: var(--fg); }
   .search-bar button { padding: 10px 18px; font: 14px var(--font); border: none; border-radius: 8px;
     background: var(--accent); color: #fff; cursor: pointer; }
-  .component-row { display: flex; gap: 8px; margin: 0 0 18px; }
+  /* The component filters take their own line below the query line. */
+  .component-row { display: flex; flex-basis: 100%; order: 1; gap: 8px; margin: 0; }
   .component-row input { flex: 1; min-width: 0; padding: 8px 10px; font: 13px var(--mono);
     border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); }
   .abstract-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-2); }
